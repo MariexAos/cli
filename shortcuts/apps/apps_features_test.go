@@ -19,6 +19,7 @@ import (
 	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/httpmock"
 	"github.com/larksuite/cli/internal/output"
+	"github.com/larksuite/cli/internal/recovery"
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
@@ -978,6 +979,70 @@ func TestAppsFeatures_PassingGatewayFailureIsReadAgain(t *testing.T) {
 		t.Fatalf("features = %v", got)
 	}
 	reg.Verify(t)
+}
+
+// requireFeatureReauthorization checks that an authentication failure keeps
+// the CLI's own re-authorization guidance and never sends the caller round
+// the same key: no key can succeed until the user authorizes again.
+func requireFeatureReauthorization(t *testing.T, err error, code int) {
+	t.Helper()
+	p := requireExit(t, err, output.ExitAuth)
+	if p.Category != errs.CategoryAuthentication || p.Retryable || p.Code != code {
+		t.Fatalf("problem = %+v, want a non-retryable authentication error with code %d", p, code)
+	}
+	if want := recovery.UserAuthorization().String(); p.Hint != want {
+		t.Fatalf("hint = %q, want the CLI's re-authorization guidance %q", p.Hint, want)
+	}
+	for _, forbid := range []string{"--idempotent-key", "--operation-ref", "resume"} {
+		if strings.Contains(p.Hint, forbid) {
+			t.Fatalf("hint must not suggest %q: %q", forbid, p.Hint)
+		}
+	}
+}
+
+func TestAppsFeatures_AuthenticationFailureAsksForReauthorization(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		msg  string
+	}{
+		// What the Miaoda sandbox proxy answers once the user's credential can
+		// no longer be refreshed.
+		{name: "Miaoda credential expired", code: 221801, msg: "miaoda UAT expired and cannot refresh, need reactivate"},
+		{name: "user token expired", code: 99991677, msg: "user access token expired"},
+	}
+	for _, tc := range cases {
+		answer := map[string]any{"code": tc.code, "msg": tc.msg}
+		t.Run(tc.name+"/enable", func(t *testing.T) {
+			fastFeatureTiming(t)
+			factory, stdout, reg := newAppsExecuteFactory(t)
+			post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true, Body: answer}
+			reg.Register(post)
+			forbidFeaturesGET(t, reg, "an authentication failure needs no operation lookup")
+
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+			requireFeatureReauthorization(t, err, tc.code)
+			if len(post.CapturedBodies) != 1 {
+				t.Fatalf("POST sent %d times, want exactly 1", len(post.CapturedBodies))
+			}
+		})
+		t.Run(tc.name+"/resume read", func(t *testing.T) {
+			fastFeatureTiming(t)
+			factory, stdout, reg := newAppsExecuteFactory(t)
+			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: answer})
+			forbidEnablePOST(t, reg, "an authentication failure must not reach the write")
+
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+			requireFeatureReauthorization(t, err, tc.code)
+		})
+		t.Run(tc.name+"/features", func(t *testing.T) {
+			factory, stdout, reg := newAppsExecuteFactory(t)
+			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: answer})
+
+			err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--operation-ref", testKey, "--as", "user"}, factory, stdout)
+			requireFeatureReauthorization(t, err, tc.code)
+		})
+	}
 }
 
 func TestAppsFeatureEnable_WaitTimeoutKeepsKeyAndDoesNotClaimRollback(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/recovery"
 	"github.com/larksuite/cli/internal/validate"
 	"github.com/larksuite/cli/shortcuts/common"
 )
@@ -348,7 +349,9 @@ func setFeatureRecoveryHint(err error, appID, key string) error {
 		return err
 	}
 	switch p.Category {
-	case errs.CategoryAuthentication, errs.CategoryAuthorization, errs.CategoryConfig, errs.CategoryValidation, errs.CategoryPolicy:
+	case errs.CategoryAuthentication:
+		return withFeatureAuthRecovery(err, p)
+	case errs.CategoryAuthorization, errs.CategoryConfig, errs.CategoryValidation, errs.CategoryPolicy:
 		return err
 	}
 	if explainFeatureRejection(p, appID, key) {
@@ -419,6 +422,25 @@ func explainFeatureRejection(p *errs.Problem, appID, key string) bool {
 		p.Hint = "the server rejected the enable request; the message says why, so fix that before trying again"
 	}
 	return true
+}
+
+// withFeatureAuthRecovery handles an authentication failure, such as an
+// expired user credential. No key can succeed until the user authorizes
+// again, so the error is not retryable and carries the CLI's own
+// re-authorization guidance instead of a same-key resume. A hint the producer
+// already set is kept; the generic guidance is the form the error presenter
+// completes with the command's scopes.
+func withFeatureAuthRecovery(err error, p *errs.Problem) error {
+	p.Retryable = false
+	if strings.TrimSpace(p.Hint) != "" {
+		return err
+	}
+	return recovery.Attach(err, recovery.UserAuthorization())
+}
+
+func isFeatureAuthFailure(err error) (*errs.Problem, bool) {
+	p, ok := errs.ProblemOf(err)
+	return p, ok && p.Category == errs.CategoryAuthentication
 }
 
 func isFeatureGatewayInternal(err error) bool {

@@ -203,7 +203,9 @@ func setKeptOperationReadHint(err error, appID, key string) error {
 		return err
 	}
 	switch p.Category {
-	case errs.CategoryAuthentication, errs.CategoryAuthorization, errs.CategoryConfig, errs.CategoryValidation, errs.CategoryPolicy:
+	case errs.CategoryAuthentication:
+		return withFeatureAuthRecovery(err, p)
+	case errs.CategoryAuthorization, errs.CategoryConfig, errs.CategoryValidation, errs.CategoryPolicy:
 		return err
 	}
 	if explainFeatureKeyNotKept(err, appID, key) {
