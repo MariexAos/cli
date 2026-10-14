@@ -535,8 +535,7 @@ func authLoginPollDeviceCode(opts *LoginOptions, config *core.CliConfig, msg *lo
 		fmt.Fprintln(f.IOStreams.ErrOut, msg.AgentTimeoutHint(recovery.RenderContext{Profile: f.Invocation.Profile}))
 	}
 	log(msg.WaitingAuth)
-	result, err := pollLoginDeviceToken(opts.Ctx, httpClient, config, clientAuth,
-		opts.DeviceCode, 5, 600, f.IOStreams.ErrOut)
+	result, err := pollLoginDeviceToken(opts.Ctx, httpClient, config, clientAuth, opts.DeviceCode, 5, 600, f.IOStreams.ErrOut)
 	if err != nil {
 		if problem, ok := errs.ProblemOf(err); ok &&
 			problem.Category == errs.CategoryPolicy && problem.Subtype == errs.SubtypeAccessDenied {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/build"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
@@ -60,7 +61,7 @@ func runProbe(parent context.Context, factory *cmdutil.Factory, appID, appSecret
 	ctx, cancel := context.WithTimeout(parent, probeTimeout)
 	defer cancel()
 
-	result, err := credential.FetchTAT(ctx, httpClient, brand, appID, appSecret, core.DPoPModeDisabled)
+	result, err := credential.FetchTAT(ctx, httpClient, brand, auth.ClientAuth{AppID: appID, AppSecret: appSecret}, core.DPoPModeDisabled)
 	if err != nil {
 		// A typed error from FetchTAT is a deterministic credential rejection
 		// (classifyTATResponseCode). Propagate it so config init exits with the
@@ -98,13 +99,13 @@ func runProbe(parent context.Context, factory *cmdutil.Factory, appID, appSecret
 	return nil
 }
 
-// runProbePKJWT does a best-effort key-binding validation after a private_key_jwt
-// config is saved: it signs a client_assertion with the local platform key and
-// mints a token. A typed error (a deterministic server rejection — e.g. the key
+// runProbePrivateKeyJWTLocalKeyPair does a best-effort key-binding validation: it signs a
+// client_assertion with the configured key (file or generated) and mints a token.
+// A typed error (a deterministic server rejection — e.g. the key
 // is not bound to this app) is propagated so `config init` exits non-zero with
 // the canonical envelope; untyped errors (transport / HTTP / parse / timeout)
 // are swallowed (return nil). The mint itself is the probe — no second call.
-func runProbePKJWT(parent context.Context, factory *cmdutil.Factory, brand core.LarkBrand, clientID string, signer keysigner.Signer, keyLabel string) error {
+func runProbePrivateKeyJWTLocalKeyPair(parent context.Context, factory *cmdutil.Factory, brand core.LarkBrand, clientID string, signer keysigner.Signer, keyLabel string) error {
 	if factory == nil {
 		return nil
 	}

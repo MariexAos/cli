@@ -29,10 +29,8 @@ import (
 type fakeRT struct {
 	tatHandler   func(req *http.Request) (*http.Response, error)
 	probeHandler func(req *http.Request) (*http.Response, error)
-	oauthHandler func(req *http.Request) (*http.Response, error)
 	tatCalls     int
 	probeCalls   int
-	oauthCalls   int
 	probeReq     *http.Request
 	probeBody    string
 }
@@ -56,18 +54,13 @@ func (f *fakeRT) RoundTrip(req *http.Request) (*http.Response, error) {
 			return jsonResp(200, `{"code":0,"data":{},"msg":"success"}`), nil
 		}
 		return f.probeHandler(req)
-	case strings.HasSuffix(req.URL.Path, "/authen/v2/oauth/token"):
-		f.oauthCalls++
-		if f.oauthHandler == nil {
-			return jsonResp(200, `{"access_token":"test-token"}`), nil
-		}
-		return f.oauthHandler(req)
+
 	}
 	return nil, errors.New("unexpected URL: " + req.URL.String())
 }
 
 // probeTestSigner is an in-memory real ECDSA P-256 signer used to sign the
-// client_assertion in runProbePKJWT tests. authMethodTestSigner only exercises
+// client_assertion in runProbePrivateKeyJWTLocalKeyPair tests. authMethodTestSigner only exercises
 // auth-method gating and does not produce a verifiable assertion.
 type probeTestSigner struct {
 	key  *ecdsa.PrivateKey
@@ -378,34 +371,34 @@ func TestRunProbe_TimeoutHonored(t *testing.T) {
 	assertSilent(t, err, errBuf)
 }
 
-// runProbePKJWT: a deterministic server rejection (invalid_client) is propagated
+// runProbePrivateKeyJWTLocalKeyPair: a deterministic server rejection (invalid_client) is propagated
 // as a typed ConfigError so config init exits non-zero.
-func TestRunProbePKJWT_DeterministicReject_Propagates(t *testing.T) {
-	rt := &fakeRT{oauthHandler: func(*http.Request) (*http.Response, error) {
+func TestRunProbePrivateKeyJWTLocalKeyPair_DeterministicReject_Propagates(t *testing.T) {
+	rt := &fakeRT{tatHandler: func(*http.Request) (*http.Response, error) {
 		return jsonResp(401, `{"error":"invalid_client","error_description":"unknown key"}`), nil
 	}}
 	f, errBuf := fakeFactory(t, rt)
-	err := runProbePKJWT(context.Background(), f, core.BrandFeishu, "cli_x", newProbeTestSigner(t), "agent-key")
+	err := runProbePrivateKeyJWTLocalKeyPair(context.Background(), f, core.BrandFeishu, "cli_x", newProbeTestSigner(t), "agent-key")
 	if err == nil || !errs.IsTyped(err) {
 		t.Fatalf("expected propagated typed error, got %T %v", err, err)
 	}
 	if errBuf.Len() != 0 {
-		t.Errorf("runProbePKJWT must not write stderr, got %q", errBuf.String())
+		t.Errorf("runProbePrivateKeyJWTLocalKeyPair must not write stderr, got %q", errBuf.String())
 	}
 }
 
-// runProbePKJWT: ambiguous upstream noise (HTTP 503) is swallowed — silent, exit 0.
-func TestRunProbePKJWT_Ambiguous_Silent(t *testing.T) {
-	rt := &fakeRT{oauthHandler: func(*http.Request) (*http.Response, error) {
+// runProbePrivateKeyJWTLocalKeyPair: ambiguous upstream noise (HTTP 503) is swallowed — silent, exit 0.
+func TestRunProbePrivateKeyJWTLocalKeyPair_Ambiguous_Silent(t *testing.T) {
+	rt := &fakeRT{tatHandler: func(*http.Request) (*http.Response, error) {
 		return jsonResp(503, `unavailable`), nil
 	}}
 	f, errBuf := fakeFactory(t, rt)
-	assertSilent(t, runProbePKJWT(context.Background(), f, core.BrandFeishu, "cli_x", newProbeTestSigner(t), "agent-key"), errBuf)
+	assertSilent(t, runProbePrivateKeyJWTLocalKeyPair(context.Background(), f, core.BrandFeishu, "cli_x", newProbeTestSigner(t), "agent-key"), errBuf)
 }
 
 // probeInitResult dispatches private_key_jwt_local_keypair to the assertion-backed probe.
-func TestProbeInitResult_PrivateKeyJWT(t *testing.T) {
-	rt := &fakeRT{} // default oauth handler returns 200 + access_token
+func TestProbeInitResult_PrivateKeyJWTLocalKeyPair(t *testing.T) {
+	rt := &fakeRT{} // default TAT handler returns 200 + access_token
 	f, errBuf := fakeFactory(t, rt)
 	opts := &ConfigInitOptions{Ctx: context.Background()}
 	result := &configInitResult{
@@ -418,15 +411,15 @@ func TestProbeInitResult_PrivateKeyJWT(t *testing.T) {
 	assertSilent(t, probeInitResult(opts, f, result), errBuf)
 }
 
-// runProbePKJWT fails closed if the signer dispatch invariant is broken.
-func TestRunProbePKJWT_NilSigner_FailsClosed(t *testing.T) {
+// runProbePrivateKeyJWTLocalKeyPair fails closed if the signer dispatch invariant is broken.
+func TestRunProbePrivateKeyJWTLocalKeyPair_NilSigner_FailsClosed(t *testing.T) {
 	f, errBuf := fakeFactory(t, &fakeRT{})
-	err := runProbePKJWT(context.Background(), f, core.BrandFeishu, "cli_x", nil, "k")
+	err := runProbePrivateKeyJWTLocalKeyPair(context.Background(), f, core.BrandFeishu, "cli_x", nil, "k")
 	var configErr *errs.ConfigError
 	if !errors.As(err, &configErr) || configErr.Subtype != errs.SubtypeInvalidConfig {
 		t.Fatalf("error = %T %v, want config/invalid_config", err, err)
 	}
 	if errBuf.Len() != 0 {
-		t.Errorf("runProbePKJWT must not write stderr, got %q", errBuf.String())
+		t.Errorf("runProbePrivateKeyJWTLocalKeyPair must not write stderr, got %q", errBuf.String())
 	}
 }

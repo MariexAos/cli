@@ -298,7 +298,7 @@ func (p *DefaultTokenProvider) doResolveTAT(ctx context.Context) (*TokenResult, 
 	if err != nil {
 		return nil, 0, err
 	}
-	token, err := FetchTATWithClientAuth(ctx, httpClient, acct.Brand, auth.ClientAuthFromConfig(acct.ToCliConfig(), signer), acct.DPoPMode)
+	token, err := FetchTAT(ctx, httpClient, acct.Brand, auth.ClientAuthFromConfig(acct.ToCliConfig(), signer), acct.DPoPMode)
 	if err != nil {
 		return nil, 0, err
 	}

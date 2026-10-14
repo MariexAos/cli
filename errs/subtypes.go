@@ -27,6 +27,7 @@ const (
 	SubtypeRefreshTokenRevoked Subtype = "refresh_token_revoked"  // refresh_token revoked (user logout / admin action)
 	SubtypeRefreshTokenReused  Subtype = "refresh_token_reused"   // refresh_token already used (single-use rotation triggered)
 	SubtypeRefreshServerError  Subtype = "refresh_server_error"   // refresh endpoint transient error (retryable)
+	SubtypeSigningKeyMissing   Subtype = "signing_key_missing"    // registered application signing key is no longer available locally
 	SubtypeDPoPKeyMissing      Subtype = "dpop_key_missing"       // DPoP-bound token has no accessible matching private key
 	SubtypeDPoPProofFailed     Subtype = "dpop_proof_failed"      // client could not construct a valid per-request proof
 	SubtypeDPoPTokenRejected   Subtype = "dpop_token_rejected"    // Token Endpoint rejected the supplied DPoP proof
