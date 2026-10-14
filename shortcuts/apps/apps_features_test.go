@@ -866,6 +866,120 @@ func TestAppsFeatureEnable_PollFailureKeepsTheOutcomeUnknown(t *testing.T) {
 	}
 }
 
+// gatewayInternalStub answers like the OpenAPI gateway when the upstream call
+// fails without a business answer, which is all a server without the app
+// features API can give.
+func gatewayInternalStub(method, url string) *httpmock.Stub {
+	return &httpmock.Stub{Method: method, URL: url, Status: 500, Reusable: true,
+		Body: map[string]any{"code": featureCodeGatewayInternal, "msg": "Internal Error"}}
+}
+
+func requireFeatureAPIMissing(t *testing.T, err error) *errs.Problem {
+	t.Helper()
+	p := requireExit(t, err, output.ExitAPI)
+	if p.Subtype != errs.SubtypeFeatureNotAvailable || p.Retryable {
+		t.Fatalf("subtype/retryable = %q/%t, want %q/false", p.Subtype, p.Retryable, errs.SubtypeFeatureNotAvailable)
+	}
+	if !strings.Contains(p.Message, "did not run the app features API") {
+		t.Fatalf("message = %q", p.Message)
+	}
+	for _, want := range []string{"do not retry", "upgraded", "Miaoda cloud development"} {
+		if !strings.Contains(p.Hint, want) {
+			t.Fatalf("hint missing %q: %q", want, p.Hint)
+		}
+	}
+	for _, forbid := range []string{"--operation-ref", "--idempotent-key "} {
+		if strings.Contains(p.Hint, forbid) {
+			t.Fatalf("hint must not send the caller back to %q: %q", forbid, p.Hint)
+		}
+	}
+	return p
+}
+
+// A server without the app features API answers the gateway's internal error
+// to every call. Confirmed by a read-only re-check, that is final: the command
+// must not be marked retryable or suggest resuming the same key.
+func TestAppsFeatureEnable_ServerWithoutFeatureAPIIsFinal(t *testing.T) {
+	t.Run("new request", func(t *testing.T) {
+		fastFeatureTiming(t)
+		factory, stdout, reg := newAppsExecuteFactory(t)
+		post := gatewayInternalStub("POST", "/features/pg/enable")
+		reg.Register(post)
+		get := gatewayInternalStub("GET", "/open-apis/spark/v1/apps/app_x/features")
+		reg.Register(get)
+
+		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+		requireFeatureAPIMissing(t, err)
+		if len(post.CapturedBodies) != 1 || len(get.CapturedBodies) != 1 {
+			t.Fatalf("POST/GET = %d/%d, want one enable and one read-only re-check", len(post.CapturedBodies), len(get.CapturedBodies))
+		}
+	})
+	t.Run("resume", func(t *testing.T) {
+		fastFeatureTiming(t)
+		factory, stdout, reg := newAppsExecuteFactory(t)
+		get := gatewayInternalStub("GET", "/open-apis/spark/v1/apps/app_x/features")
+		reg.Register(get)
+		forbidEnablePOST(t, reg, "a server without the API must not get the write")
+
+		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+		requireFeatureAPIMissing(t, err)
+		if len(get.CapturedBodies) != 2 {
+			t.Fatalf("GET = %d, want the kept-operation read and one re-check", len(get.CapturedBodies))
+		}
+	})
+}
+
+// The same gateway error from a server that does serve the API is a passing
+// failure: the read-only re-check succeeds, and the enable keeps its
+// same-key resume guidance.
+func TestAppsFeatureEnable_PassingGatewayFailureKeepsTheResumeHint(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	post := gatewayInternalStub("POST", "/features/pg/enable")
+	reg.Register(post)
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(pgStatusWire(false), nil)})
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	p := requireExit(t, err, output.ExitAPI)
+	if p.Subtype != errs.SubtypeServerError || !p.Retryable {
+		t.Fatalf("subtype/retryable = %q/%t, want the classifier's %q/true", p.Subtype, p.Retryable, errs.SubtypeServerError)
+	}
+	key := sentKey(t, post.CapturedBody)
+	for _, want := range []string{"to resume the same request run", "--idempotent-key " + key, "--operation-ref " + key} {
+		if !strings.Contains(p.Hint, want) {
+			t.Fatalf("hint missing %q: %q", want, p.Hint)
+		}
+	}
+	reg.Verify(t)
+}
+
+func TestAppsFeatures_ServerWithoutFeatureAPIIsFinal(t *testing.T) {
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	get := gatewayInternalStub("GET", "/open-apis/spark/v1/apps/app_x/features")
+	reg.Register(get)
+
+	err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	requireFeatureAPIMissing(t, err)
+	if len(get.CapturedBodies) != 2 {
+		t.Fatalf("GET = %d, want the read and one re-check", len(get.CapturedBodies))
+	}
+}
+
+func TestAppsFeatures_PassingGatewayFailureIsReadAgain(t *testing.T) {
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Status: 500,
+		Body: map[string]any{"code": featureCodeGatewayInternal, "msg": "Internal Error"}})
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(pgStatusWire(true), nil)})
+
+	if err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
+		t.Fatalf("execute err=%v", err)
+	}
+	if got := decodeSuccessData(t, stdout)["features"]; !reflect.DeepEqual(got, []any{map[string]any{"name": "pg", "enabled": true}}) {
+		t.Fatalf("features = %v", got)
+	}
+	reg.Verify(t)
+}
+
 func TestAppsFeatureEnable_WaitTimeoutKeepsKeyAndDoesNotClaimRollback(t *testing.T) {
 	fastFeatureTiming(t)
 	featureEnableMaxWait = 20 * time.Millisecond

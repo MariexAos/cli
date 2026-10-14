@@ -100,6 +100,9 @@ func runFeatureEnable(rctx *common.RuntimeContext, appID, feature, key string, r
 	if resume {
 		kept, err := readKeptFeatureOperation(rctx, appID, feature, key)
 		if err != nil {
+			if confirmFeatureAPIMissing(rctx, appID, err) {
+				return explainFeatureAPIMissing(err, appID)
+			}
 			return err
 		}
 		// A retryable failure may continue: it is re-sent below with the same
@@ -112,6 +115,9 @@ func runFeatureEnable(rctx *common.RuntimeContext, appID, feature, key string, r
 	body := map[string]any{"idempotent_key": key}
 	data, err := callWithIdempotentReplay(rctx, "POST", appFeatureEnablePath(appID, feature), nil, body)
 	if err != nil {
+		if confirmFeatureAPIMissing(rctx, appID, err) {
+			return explainFeatureAPIMissing(err, appID)
+		}
 		// The server answers 40913 while any enable holds the app, including
 		// this key's own earlier attempt that a network replay raced. If the
 		// server keeps an operation for this key, that operation is the answer.

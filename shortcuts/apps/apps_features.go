@@ -51,6 +51,14 @@ var AppsFeatures = common.Shortcut{
 	Execute: func(ctx context.Context, rctx *common.RuntimeContext) error {
 		appID := strings.TrimSpace(rctx.Str("app-id"))
 		data, err := rctx.CallAPITyped("GET", appFeaturesPath(appID), featuresQueryParams(rctx), nil)
+		if isFeatureGatewayInternal(err) {
+			// A passing upstream failure clears on a second read; a server
+			// without app features answers the same way again.
+			data, err = rctx.CallAPITyped("GET", appFeaturesPath(appID), featuresQueryParams(rctx), nil)
+			if isFeatureGatewayInternal(err) {
+				return explainFeatureAPIMissing(err, appID)
+			}
+		}
 		if err != nil {
 			if ref := canonicalIdempotentKey(rctx.Str("operation-ref")); ref != "" && explainFeatureKeyNotKept(err, appID, ref) {
 				return err
