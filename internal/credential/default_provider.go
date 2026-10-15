@@ -194,7 +194,10 @@ func (p *DefaultTokenProvider) resolveUAT(ctx context.Context) (*TokenResult, er
 	if err != nil {
 		return nil, err
 	}
-	hadStored, _ := auth.GetStoredToken(acct.AppID, acct.UserOpenId)
+	hadStored, err := auth.GetStoredToken(acct.AppID, acct.UserOpenId)
+	if err != nil {
+		return nil, err
+	}
 	if hadStored == nil {
 		if clearedErr := p.cachedClearedUATError(acct.AppID, acct.UserOpenId); clearedErr != nil {
 			return nil, clearedErr
@@ -204,7 +207,7 @@ func (p *DefaultTokenProvider) resolveUAT(ctx context.Context) (*TokenResult, er
 	if err != nil {
 		if hadStored != nil {
 			if nowStored, storeErr := auth.GetStoredToken(acct.AppID, acct.UserOpenId); storeErr == nil && nowStored == nil {
-				p.recordClearedUATError(acct.AppID, acct.UserOpenId, err)
+				return nil, p.recordClearedUATError(acct.AppID, acct.UserOpenId, err)
 			}
 		}
 		return nil, err
@@ -231,11 +234,16 @@ func (p *DefaultTokenProvider) cachedClearedUATError(appID, userOpenID string) e
 	return nil
 }
 
-func (p *DefaultTokenProvider) recordClearedUATError(appID, userOpenID string, err error) {
+func (p *DefaultTokenProvider) recordClearedUATError(appID, userOpenID string, err error) error {
 	p.uatMu.Lock()
 	defer p.uatMu.Unlock()
-	p.uatClearedKey = uatAccountCacheKey(appID, userOpenID)
+	key := uatAccountCacheKey(appID, userOpenID)
+	if p.uatClearedKey == key && p.uatClearedErr != nil {
+		return p.uatClearedErr
+	}
+	p.uatClearedKey = key
 	p.uatClearedErr = err
+	return err
 }
 
 func (p *DefaultTokenProvider) clearCachedUATError(appID, userOpenID string) {

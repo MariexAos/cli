@@ -258,11 +258,29 @@ func TestDefaultTokenProviderRetainsClearedUATErrorAcrossRepeatedResolve(t *test
 		t.Fatalf("first ResolveToken() error = %v (hint=%q), want offline_access diagnosis", firstErr, firstProblem.Hint)
 	}
 
+	// A concurrent call that observed hadStored != nil before deletion and later received a generic no-token error
+	// must not overwrite the first call's offline_access diagnosis.
+	racedErr := provider.recordClearedUATError(appID, userOpenID, auth.NewNeedUserAuthorizationError(userOpenID))
+	racedProblem, ok := errs.ProblemOf(racedErr)
+	if !ok || !strings.Contains(racedProblem.Hint, "offline_access") {
+		t.Fatalf("recordClearedUATError() after race = %v (hint=%q), want preserved offline_access diagnosis", racedErr, racedProblem.Hint)
+	}
+
 	// Second call in the same CLI invocation (simulating DoAPI / AccessToken after preflight) must retain the offline_access diagnosis.
 	_, secondErr := provider.ResolveToken(context.Background(), TokenSpec{Type: TokenTypeUAT, AppID: appID})
 	secondProblem, ok := errs.ProblemOf(secondErr)
 	if !ok || !strings.Contains(secondProblem.Hint, "offline_access") {
 		t.Fatalf("second ResolveToken() error = %v (hint=%q), want retained offline_access diagnosis", secondErr, secondProblem.Hint)
+	}
+
+	// A token-store read/corruption error must surface directly instead of being masked by the retained diagnosis.
+	if err := keychain.Set(keychain.LarkCliService, appID+":"+userOpenID, "{corrupt-json"); err != nil {
+		t.Fatal(err)
+	}
+	_, corruptErr := provider.ResolveToken(context.Background(), TokenSpec{Type: TokenTypeUAT, AppID: appID})
+	corruptProblem, ok := errs.ProblemOf(corruptErr)
+	if !ok || corruptProblem.Category != errs.CategoryInternal || corruptProblem.Subtype != errs.SubtypeStorage {
+		t.Fatalf("ResolveToken() with corrupt stored token = %v, want internal/storage error", corruptErr)
 	}
 
 	// Once a valid token is stored, ResolveToken clears the retained error and returns the token.
