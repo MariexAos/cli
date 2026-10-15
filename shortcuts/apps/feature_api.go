@@ -6,6 +6,7 @@ package apps
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -348,9 +349,10 @@ func setFeatureRecoveryHint(err error, appID, key string) error {
 	if !ok {
 		return err
 	}
+	if authErr, ok := featureAuthFailure(err); ok {
+		return withFeatureAuthRecovery(authErr)
+	}
 	switch p.Category {
-	case errs.CategoryAuthentication:
-		return withFeatureAuthRecovery(err, p)
 	case errs.CategoryAuthorization, errs.CategoryConfig, errs.CategoryValidation, errs.CategoryPolicy:
 		return err
 	}
@@ -424,23 +426,48 @@ func explainFeatureRejection(p *errs.Problem, appID, key string) bool {
 	return true
 }
 
+// featureAuthFailure reports whether err is an authentication failure and, if
+// so, returns it as one: the CLI's own authentication errors as they are, and
+// an HTTP 401 that reached the CLI without an API envelope re-typed as one.
+// Spark answers its own failures inside an envelope, so a bare 401 comes from
+// a proxy or gateway in front of it rejecting the credential, as the Miaoda
+// sandbox proxy does for an invalid one.
+func featureAuthFailure(err error) (error, bool) {
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		return err, false
+	}
+	switch {
+	case p.Category == errs.CategoryAuthentication:
+		return err, true
+	case p.Category == errs.CategoryAPI && p.Code == http.StatusUnauthorized:
+		authErr := errs.NewAuthenticationError(errs.SubtypeTokenInvalid, "%s", p.Message).
+			WithCode(p.Code).
+			WithCause(err)
+		if p.LogID != "" {
+			authErr = authErr.WithLogID(p.LogID)
+		}
+		return authErr, true
+	}
+	return err, false
+}
+
 // withFeatureAuthRecovery handles an authentication failure, such as an
-// expired user credential. No key can succeed until the user authorizes
-// again, so the error is not retryable and carries the CLI's own
+// expired or invalid user credential. No key can succeed until the user
+// authorizes again, so the error is not retryable and carries the CLI's own
 // re-authorization guidance instead of a same-key resume. A hint the producer
 // already set is kept; the generic guidance is the form the error presenter
 // completes with the command's scopes.
-func withFeatureAuthRecovery(err error, p *errs.Problem) error {
+func withFeatureAuthRecovery(err error) error {
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		return err
+	}
 	p.Retryable = false
 	if strings.TrimSpace(p.Hint) != "" {
 		return err
 	}
 	return recovery.Attach(err, recovery.UserAuthorization())
-}
-
-func isFeatureAuthFailure(err error) (*errs.Problem, bool) {
-	p, ok := errs.ProblemOf(err)
-	return p, ok && p.Category == errs.CategoryAuthentication
 }
 
 func isFeatureGatewayInternal(err error) bool {

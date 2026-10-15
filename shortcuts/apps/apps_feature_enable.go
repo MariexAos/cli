@@ -202,9 +202,10 @@ func setKeptOperationReadHint(err error, appID, key string) error {
 	if !ok {
 		return err
 	}
+	if authErr, ok := featureAuthFailure(err); ok {
+		return withFeatureAuthRecovery(authErr)
+	}
 	switch p.Category {
-	case errs.CategoryAuthentication:
-		return withFeatureAuthRecovery(err, p)
 	case errs.CategoryAuthorization, errs.CategoryConfig, errs.CategoryValidation, errs.CategoryPolicy:
 		return err
 	}

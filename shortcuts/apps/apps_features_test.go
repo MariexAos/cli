@@ -1002,21 +1002,27 @@ func requireFeatureReauthorization(t *testing.T, err error, code int) {
 
 func TestAppsFeatures_AuthenticationFailureAsksForReauthorization(t *testing.T) {
 	cases := []struct {
-		name string
-		code int
-		msg  string
+		name   string
+		status int
+		body   map[string]any
+		code   int
 	}{
 		// What the Miaoda sandbox proxy answers once the user's credential can
 		// no longer be refreshed.
-		{name: "Miaoda credential expired", code: 221801, msg: "miaoda UAT expired and cannot refresh, need reactivate"},
-		{name: "user token expired", code: 99991677, msg: "user access token expired"},
+		{name: "Miaoda credential expired", code: 221801,
+			body: map[string]any{"code": 221801, "msg": "miaoda UAT expired and cannot refresh, need reactivate"}},
+		{name: "user token expired", code: 99991677,
+			body: map[string]any{"code": 99991677, "msg": "user access token expired"}},
+		// What the Miaoda sandbox proxy answers for a credential it cannot
+		// accept: a bare HTTP 401 without an API envelope.
+		{name: "credential rejected by the proxy", status: 401, code: 401,
+			body: map[string]any{"lang_id": 1033, "status_code": "k_gw_ec_000032", "error_msg": "Invalid Parameters"}},
 	}
 	for _, tc := range cases {
-		answer := map[string]any{"code": tc.code, "msg": tc.msg}
 		t.Run(tc.name+"/enable", func(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
-			post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true, Body: answer}
+			post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true, Status: tc.status, Body: tc.body}
 			reg.Register(post)
 			forbidFeaturesGET(t, reg, "an authentication failure needs no operation lookup")
 
@@ -1029,19 +1035,22 @@ func TestAppsFeatures_AuthenticationFailureAsksForReauthorization(t *testing.T) 
 		t.Run(tc.name+"/resume read", func(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
-			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: answer})
+			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Status: tc.status, Body: tc.body})
 			forbidEnablePOST(t, reg, "an authentication failure must not reach the write")
 
 			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 			requireFeatureReauthorization(t, err, tc.code)
 		})
-		t.Run(tc.name+"/features", func(t *testing.T) {
-			factory, stdout, reg := newAppsExecuteFactory(t)
-			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: answer})
+		for _, extra := range [][]string{nil, {"--operation-ref", testKey}} {
+			t.Run(tc.name+"/features"+strings.Join(extra, "="), func(t *testing.T) {
+				factory, stdout, reg := newAppsExecuteFactory(t)
+				reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Status: tc.status, Body: tc.body})
 
-			err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--operation-ref", testKey, "--as", "user"}, factory, stdout)
-			requireFeatureReauthorization(t, err, tc.code)
-		})
+				args := append([]string{"+features", "--app-id", "app_x", "--as", "user"}, extra...)
+				err := runAppsShortcut(t, AppsFeatures, args, factory, stdout)
+				requireFeatureReauthorization(t, err, tc.code)
+			})
+		}
 	}
 }
 

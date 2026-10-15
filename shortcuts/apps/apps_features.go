@@ -60,8 +60,8 @@ var AppsFeatures = common.Shortcut{
 			}
 		}
 		if err != nil {
-			if p, ok := isFeatureAuthFailure(err); ok {
-				return withFeatureAuthRecovery(err, p)
+			if authErr, ok := featureAuthFailure(err); ok {
+				return withFeatureAuthRecovery(authErr)
 			}
 			if ref := canonicalIdempotentKey(rctx.Str("operation-ref")); ref != "" && explainFeatureKeyNotKept(err, appID, ref) {
 				return err
