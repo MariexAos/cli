@@ -136,6 +136,10 @@ type DefaultTokenProvider struct {
 	httpClient  func() (*http.Client, error)
 	errOut      io.Writer
 
+	uatMu         sync.Mutex
+	uatClearedKey string
+	uatClearedErr error
+
 	tatMu        sync.Mutex
 	tatResult    *TokenResult
 	tatRefreshAt time.Time
@@ -177,6 +181,10 @@ func (p *DefaultTokenProvider) ResolveToken(ctx context.Context, req TokenSpec) 
 
 // resolveUAT resolves a user access token. Not cached (unlike TAT) because UAT
 // may be refreshed between calls and GetValidAccessToken handles its own caching.
+// When GetValidAccessToken clears an expired or unrefreshable stored token (for
+// example during shortcut/service scope preflight), the resulting error is
+// retained while no replacement token exists so the execution call in the same
+// CLI invocation preserves the specific failure diagnosis.
 func (p *DefaultTokenProvider) resolveUAT(ctx context.Context) (*TokenResult, error) {
 	acct, err := p.defaultAcct.ResolveAccount(ctx)
 	if err != nil {
@@ -186,16 +194,57 @@ func (p *DefaultTokenProvider) resolveUAT(ctx context.Context) (*TokenResult, er
 	if err != nil {
 		return nil, err
 	}
+	hadStored, _ := auth.GetStoredToken(acct.AppID, acct.UserOpenId)
+	if hadStored == nil {
+		if clearedErr := p.cachedClearedUATError(acct.AppID, acct.UserOpenId); clearedErr != nil {
+			return nil, clearedErr
+		}
+	}
 	resolved, err := auth.GetValidAccessToken(ctx, httpClient, auth.NewUATCallOptions(acct.ToCliConfig(), p.errOut))
 	if err != nil {
+		if hadStored != nil {
+			if nowStored, storeErr := auth.GetStoredToken(acct.AppID, acct.UserOpenId); storeErr == nil && nowStored == nil {
+				p.recordClearedUATError(acct.AppID, acct.UserOpenId, err)
+			}
+		}
 		return nil, err
 	}
+	p.clearCachedUATError(acct.AppID, acct.UserOpenId)
 	stored, _ := auth.GetStoredToken(acct.AppID, acct.UserOpenId)
 	scopes := ""
 	if stored != nil {
 		scopes = stored.Scope
 	}
 	return &TokenResult{Token: resolved.AccessToken, Scopes: scopes, DPoP: resolved.DPoP}, nil
+}
+
+func uatAccountCacheKey(appID, userOpenID string) string {
+	return appID + "\x00" + userOpenID
+}
+
+func (p *DefaultTokenProvider) cachedClearedUATError(appID, userOpenID string) error {
+	p.uatMu.Lock()
+	defer p.uatMu.Unlock()
+	if p.uatClearedKey == uatAccountCacheKey(appID, userOpenID) {
+		return p.uatClearedErr
+	}
+	return nil
+}
+
+func (p *DefaultTokenProvider) recordClearedUATError(appID, userOpenID string, err error) {
+	p.uatMu.Lock()
+	defer p.uatMu.Unlock()
+	p.uatClearedKey = uatAccountCacheKey(appID, userOpenID)
+	p.uatClearedErr = err
+}
+
+func (p *DefaultTokenProvider) clearCachedUATError(appID, userOpenID string) {
+	p.uatMu.Lock()
+	defer p.uatMu.Unlock()
+	if p.uatClearedKey == uatAccountCacheKey(appID, userOpenID) {
+		p.uatClearedKey = ""
+		p.uatClearedErr = nil
+	}
 }
 
 // resolveTAT caches minted tenant tokens in memory and renews them before their
