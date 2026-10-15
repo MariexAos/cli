@@ -194,12 +194,16 @@ func (p *DefaultTokenProvider) resolveUAT(ctx context.Context) (*TokenResult, er
 	if err != nil {
 		return nil, err
 	}
+
+	p.uatMu.Lock()
+	defer p.uatMu.Unlock()
+
 	hadStored, err := auth.GetStoredToken(acct.AppID, acct.UserOpenId)
 	if err != nil {
 		return nil, err
 	}
 	if hadStored == nil {
-		if clearedErr := p.cachedClearedUATError(acct.AppID, acct.UserOpenId); clearedErr != nil {
+		if clearedErr := p.cachedClearedUATErrorLocked(acct.AppID, acct.UserOpenId); clearedErr != nil {
 			return nil, clearedErr
 		}
 	}
@@ -207,12 +211,12 @@ func (p *DefaultTokenProvider) resolveUAT(ctx context.Context) (*TokenResult, er
 	if err != nil {
 		if hadStored != nil {
 			if nowStored, storeErr := auth.GetStoredToken(acct.AppID, acct.UserOpenId); storeErr == nil && nowStored == nil {
-				return nil, p.recordClearedUATError(acct.AppID, acct.UserOpenId, err)
+				return nil, p.recordClearedUATErrorLocked(acct.AppID, acct.UserOpenId, err)
 			}
 		}
 		return nil, err
 	}
-	p.clearCachedUATError(acct.AppID, acct.UserOpenId)
+	p.clearCachedUATErrorLocked(acct.AppID, acct.UserOpenId)
 	stored, _ := auth.GetStoredToken(acct.AppID, acct.UserOpenId)
 	scopes := ""
 	if stored != nil {
@@ -225,9 +229,19 @@ func uatAccountCacheKey(appID, userOpenID string) string {
 	return appID + "\x00" + userOpenID
 }
 
-func (p *DefaultTokenProvider) cachedClearedUATError(appID, userOpenID string) error {
-	p.uatMu.Lock()
-	defer p.uatMu.Unlock()
+func isGenericNeedUserAuthorizationError(userOpenID string, err error) bool {
+	if !auth.IsNeedUserAuthorizationError(err) {
+		return false
+	}
+	problem, ok := errs.ProblemOf(err)
+	if !ok {
+		return false
+	}
+	genericProblem, ok := errs.ProblemOf(auth.NewNeedUserAuthorizationError(userOpenID))
+	return ok && problem.Hint == genericProblem.Hint
+}
+
+func (p *DefaultTokenProvider) cachedClearedUATErrorLocked(appID, userOpenID string) error {
 	if p.uatClearedKey == uatAccountCacheKey(appID, userOpenID) {
 		return p.uatClearedErr
 	}
@@ -237,8 +251,16 @@ func (p *DefaultTokenProvider) cachedClearedUATError(appID, userOpenID string) e
 func (p *DefaultTokenProvider) recordClearedUATError(appID, userOpenID string, err error) error {
 	p.uatMu.Lock()
 	defer p.uatMu.Unlock()
+	return p.recordClearedUATErrorLocked(appID, userOpenID, err)
+}
+
+func (p *DefaultTokenProvider) recordClearedUATErrorLocked(appID, userOpenID string, err error) error {
 	key := uatAccountCacheKey(appID, userOpenID)
 	if p.uatClearedKey == key && p.uatClearedErr != nil {
+		if isGenericNeedUserAuthorizationError(userOpenID, p.uatClearedErr) &&
+			!isGenericNeedUserAuthorizationError(userOpenID, err) {
+			p.uatClearedErr = err
+		}
 		return p.uatClearedErr
 	}
 	p.uatClearedKey = key
@@ -246,9 +268,7 @@ func (p *DefaultTokenProvider) recordClearedUATError(appID, userOpenID string, e
 	return err
 }
 
-func (p *DefaultTokenProvider) clearCachedUATError(appID, userOpenID string) {
-	p.uatMu.Lock()
-	defer p.uatMu.Unlock()
+func (p *DefaultTokenProvider) clearCachedUATErrorLocked(appID, userOpenID string) {
 	if p.uatClearedKey == uatAccountCacheKey(appID, userOpenID) {
 		p.uatClearedKey = ""
 		p.uatClearedErr = nil

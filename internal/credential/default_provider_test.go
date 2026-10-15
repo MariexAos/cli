@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -266,11 +267,58 @@ func TestDefaultTokenProviderRetainsClearedUATErrorAcrossRepeatedResolve(t *test
 		t.Fatalf("recordClearedUATError() after race = %v (hint=%q), want preserved offline_access diagnosis", racedErr, racedProblem.Hint)
 	}
 
+	// Conversely, if a generic no-token error was recorded first, a subsequent specific diagnosis must upgrade it.
+	provider.uatMu.Lock()
+	provider.clearCachedUATErrorLocked(appID, userOpenID)
+	provider.uatMu.Unlock()
+	_ = provider.recordClearedUATError(appID, userOpenID, auth.NewNeedUserAuthorizationError(userOpenID))
+	upgradedErr := provider.recordClearedUATError(appID, userOpenID, firstErr)
+	upgradedProblem, ok := errs.ProblemOf(upgradedErr)
+	if !ok || !strings.Contains(upgradedProblem.Hint, "offline_access") {
+		t.Fatalf("recordClearedUATError() when generic recorded first = %v (hint=%q), want upgraded offline_access diagnosis", upgradedErr, upgradedProblem.Hint)
+	}
+
 	// Second call in the same CLI invocation (simulating DoAPI / AccessToken after preflight) must retain the offline_access diagnosis.
 	_, secondErr := provider.ResolveToken(context.Background(), TokenSpec{Type: TokenTypeUAT, AppID: appID})
 	secondProblem, ok := errs.ProblemOf(secondErr)
 	if !ok || !strings.Contains(secondProblem.Hint, "offline_access") {
 		t.Fatalf("second ResolveToken() error = %v (hint=%q), want retained offline_access diagnosis", secondErr, secondProblem.Hint)
+	}
+
+	// Concurrent ResolveToken calls against a freshly expired access-only token must all receive the offline_access diagnosis.
+	if err := auth.SetStoredToken(&auth.StoredUAToken{
+		AppId:            appID,
+		UserOpenId:       userOpenID,
+		AccessToken:      "u-expired-no-refresh-concurrent",
+		ExpiresAt:        now - 1000,
+		RefreshExpiresAt: now - 1000,
+		Scope:            "im:chat:read",
+		TokenType:        auth.StoredTokenTypeBearer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	concurrentProvider := NewDefaultTokenProvider(account, func() (*http.Client, error) { return http.DefaultClient, nil }, io.Discard)
+	const workers = 8
+	errsCh := make(chan error, workers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := concurrentProvider.ResolveToken(context.Background(), TokenSpec{Type: TokenTypeUAT, AppID: appID})
+			errsCh <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errsCh)
+	for workerErr := range errsCh {
+		workerProblem, ok := errs.ProblemOf(workerErr)
+		if !ok || !strings.Contains(workerProblem.Hint, "offline_access") {
+			t.Fatalf("concurrent ResolveToken() error = %v (hint=%q), want offline_access diagnosis", workerErr, workerProblem.Hint)
+		}
 	}
 
 	// A token-store read/corruption error must surface directly instead of being masked by the retained diagnosis.
