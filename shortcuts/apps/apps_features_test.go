@@ -202,7 +202,7 @@ func TestAppsFeatures_PrettyShowsNameAndEnabled(t *testing.T) {
 	if err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--format", "pretty", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
-	if got := stdout.String(); got != "app: app_x\npg: enabled=true\n" {
+	if got := stdout.String(); got != "app: app_x\ndatabase: enabled=true\n" {
 		t.Fatalf("pretty output = %q", got)
 	}
 }
@@ -652,7 +652,7 @@ func TestAppsFeatureEnable_RejectsMalformedIdempotentKeyWithoutNetwork(t *testin
 
 // The feature is a declared --feature flag: Required and Enum come from the
 // shared Flag declaration, so help, completion and machine metadata carry it.
-func TestAppsFeatureEnable_DeclaresRequiredFeatureFlagLimitedToPG(t *testing.T) {
+func TestAppsFeatureEnable_DeclaresRequiredFeatureFlagLimitedToDatabase(t *testing.T) {
 	var feature *common.Flag
 	for i := range AppsFeatureEnable.Flags {
 		if AppsFeatureEnable.Flags[i].Name == "feature" {
