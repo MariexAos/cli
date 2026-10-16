@@ -37,7 +37,7 @@ var AppsEnvPull = common.Shortcut{
 	Risk:        "write",
 	Tips: []string{
 		"Example: lark-cli apps +env-pull --app-id <app_id>",
-		"Tip: the output describes only the pulled environment, not whether the app's pg feature is enabled; check that with +features.",
+		"Tip: the output describes only the pulled environment, not whether the app's database feature is enabled; check that with +features.",
 		"Tip: restart the whole local dev process after pulling (nothing restarts it automatically), then verify one real database read/write.",
 	},
 	Scopes:    []string{"spark:app:read"},

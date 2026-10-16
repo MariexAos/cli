@@ -12,7 +12,7 @@ import (
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
-// AppsFeatures reads an app's business feature switches (pg in this release):
+// AppsFeatures reads an app's business feature switches (database in this release):
 // each feature's name and whether it is enabled. It is read-only: it never
 // prepares resources, issues credentials, or returns connection strings, and
 // enabled=true says nothing about local development readiness.

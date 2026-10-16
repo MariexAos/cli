@@ -25,14 +25,14 @@ import (
 
 const testKey = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
-func pgStatusWire(enabled bool) map[string]any {
-	return map[string]any{"name": "pg", "enabled": enabled}
+func featureStatusWire(enabled bool) map[string]any {
+	return map[string]any{"name": "database", "enabled": enabled}
 }
 
-func featuresResponse(pg map[string]any, op map[string]any) map[string]any {
+func featuresResponse(feat map[string]any, op map[string]any) map[string]any {
 	data := map[string]any{
 		"app_id":   "app_x",
-		"features": []any{pg},
+		"features": []any{feat},
 	}
 	if op != nil {
 		data["operation"] = op
@@ -40,10 +40,10 @@ func featuresResponse(pg map[string]any, op map[string]any) map[string]any {
 	return map[string]any{"code": 0, "data": data}
 }
 
-func enableResponse(pg map[string]any, op map[string]any) map[string]any {
+func enableResponse(feat map[string]any, op map[string]any) map[string]any {
 	data := map[string]any{
 		"app_id":  "app_x",
-		"feature": pg,
+		"feature": feat,
 	}
 	if op != nil {
 		data["operation"] = op
@@ -72,7 +72,7 @@ func forbidFeaturesGET(t *testing.T, reg *httpmock.Registry, why string) {
 
 func forbidEnablePOST(t *testing.T, reg *httpmock.Registry, why string) {
 	t.Helper()
-	reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true, Optional: true,
+	reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/database/enable", Reusable: true, Optional: true,
 		OnMatch: func(*http.Request) { t.Errorf("unexpected POST enable: %s", why) }})
 }
 
@@ -174,7 +174,7 @@ func TestAppsFeatures_OutputsOnlyNameAndEnabled(t *testing.T) {
 		Method: "GET",
 		URL:    "/open-apis/spark/v1/apps/app_x/features",
 		RawBody: []byte(`{"code":0,"data":{"app_id":"app_x","feature_protocol":1,"config_revision":"7560123456789012345",` +
-			`"features":[{"name":"pg","enabled":false,"resource_status":"absent","db_env_type":"none","available_environments":[],` +
+			`"features":[{"name":"database","enabled":false,"resource_status":"absent","db_env_type":"none","available_environments":[],` +
 			`"local_development_ready":false,"can_enable":true,"reason":"","next_action":""}]}}`),
 	})
 
@@ -189,16 +189,16 @@ func TestAppsFeatures_OutputsOnlyNameAndEnabled(t *testing.T) {
 	if len(features) != 1 {
 		t.Fatalf("features = %v", data["features"])
 	}
-	pg, _ := features[0].(map[string]any)
-	if !reflect.DeepEqual(pg, map[string]any{"name": "pg", "enabled": false}) {
-		t.Fatalf("feature = %v, want exactly name/enabled with enabled=false kept", pg)
+	feat, _ := features[0].(map[string]any)
+	if !reflect.DeepEqual(feat, map[string]any{"name": "database", "enabled": false}) {
+		t.Fatalf("feature = %v, want exactly name/enabled with enabled=false kept", feat)
 	}
 	reg.Verify(t)
 }
 
 func TestAppsFeatures_PrettyShowsNameAndEnabled(t *testing.T) {
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(pgStatusWire(true), nil)})
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(featureStatusWire(true), nil)})
 	if err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--format", "pretty", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
@@ -216,7 +216,7 @@ func TestAppsFeatures_ForwardsOperationRef(t *testing.T) {
 			reg.Register(&httpmock.Stub{
 				Method: "GET",
 				URL:    "/open-apis/spark/v1/apps/app_x/features?operation_ref=" + testKey,
-				Body:   featuresResponse(pgStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"}),
+				Body:   featuresResponse(featureStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"}),
 			})
 			if err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--operation-ref", ref, "--as", "user"}, factory, stdout); err != nil {
 				t.Fatalf("execute err=%v", err)
@@ -233,8 +233,8 @@ func TestAppsFeatures_ForwardsOperationRef(t *testing.T) {
 
 func TestAppsFeatures_RejectsMalformedAnswers(t *testing.T) {
 	cases := map[string]string{
-		"missing enabled":  `{"code":0,"data":{"app_id":"app_x","features":[{"name":"pg"}]}}`,
-		"enabled string":   `{"code":0,"data":{"app_id":"app_x","features":[{"name":"pg","enabled":"true"}]}}`,
+		"missing enabled":  `{"code":0,"data":{"app_id":"app_x","features":[{"name":"database"}]}}`,
+		"enabled string":   `{"code":0,"data":{"app_id":"app_x","features":[{"name":"database","enabled":"true"}]}}`,
 		"missing name":     `{"code":0,"data":{"app_id":"app_x","features":[{"enabled":true}]}}`,
 		"missing features": `{"code":0,"data":{"app_id":"app_x"}}`,
 		"missing app_id":   `{"code":0,"data":{"features":[]}}`,
@@ -274,7 +274,7 @@ func TestAppsFeatures_DryRunSendsNothing(t *testing.T) {
 
 func TestAppsFeatures_RejectsPositionalArgument(t *testing.T) {
 	factory, stdout, _ := newAppsExecuteFactory(t)
-	err := runAppsShortcut(t, AppsFeatures, []string{"+features", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	err := runAppsShortcut(t, AppsFeatures, []string{"+features", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 	if err == nil || !strings.Contains(err.Error(), "positional arguments are not supported") {
 		t.Fatalf("err = %v, want positional rejection", err)
 	}
@@ -287,12 +287,12 @@ func TestAppsFeatureEnable_PostsOnlyTheIdempotentKey(t *testing.T) {
 	t.Setenv(envKeyMiaodaAuthnCode, "")
 	factory, stdout, reg := newAppsExecuteFactory(t)
 	forbidFeaturesGET(t, reg, "a new request needs no read before the enable")
-	post := echoKeyStub(t, "POST", "/open-apis/spark/v1/apps/app_x/features/pg/enable", func(key string) map[string]any {
-		return enableResponse(pgStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
+	post := echoKeyStub(t, "POST", "/open-apis/spark/v1/apps/app_x/features/database/enable", func(key string) map[string]any {
+		return enableResponse(featureStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
 	})
 	reg.Register(post)
 
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
 	body := decodeBody(t, post.CapturedBody)
@@ -310,7 +310,7 @@ func TestAppsFeatureEnable_PostsOnlyTheIdempotentKey(t *testing.T) {
 	if data["idempotent_key"] != key {
 		t.Fatalf("output key = %v, want %s", data["idempotent_key"], key)
 	}
-	if !reflect.DeepEqual(data["feature"], map[string]any{"name": "pg", "enabled": true}) {
+	if !reflect.DeepEqual(data["feature"], map[string]any{"name": "database", "enabled": true}) {
 		t.Fatalf("feature = %v", data["feature"])
 	}
 	steps, _ := json.Marshal(data["next_steps"])
@@ -328,11 +328,11 @@ func TestAppsFeatureEnable_SandboxNextStepsLeaveTheDatabaseToThePlatform(t *test
 	fastFeatureTiming(t)
 	t.Setenv(envKeyMiaodaAuthnCode, "sandbox-authn-code")
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	reg.Register(echoKeyStub(t, "POST", "/features/pg/enable", func(key string) map[string]any {
-		return enableResponse(pgStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
+	reg.Register(echoKeyStub(t, "POST", "/features/database/enable", func(key string) map[string]any {
+		return enableResponse(featureStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
 	}))
 
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
 	steps, _ := json.Marshal(decodeSuccessData(t, stdout)["next_steps"])
@@ -352,9 +352,9 @@ func TestAppsFeatureEnable_SandboxNextStepsLeaveTheDatabaseToThePlatform(t *test
 func TestAppsFeatureEnable_ReadyWithoutOperationSucceeds(t *testing.T) {
 	fastFeatureTiming(t)
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Body: enableResponse(pgStatusWire(true), nil)})
+	reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/database/enable", Body: enableResponse(featureStatusWire(true), nil)})
 
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
 	data := decodeSuccessData(t, stdout)
@@ -366,18 +366,18 @@ func TestAppsFeatureEnable_ReadyWithoutOperationSucceeds(t *testing.T) {
 
 func TestAppsFeatureEnable_SuccessWithoutEnabledIsNotReportedAsSuccess(t *testing.T) {
 	cases := map[string]map[string]any{
-		"enabled=false":  pgStatusWire(false),
-		"enabled absent": {"name": "pg"},
+		"enabled=false":  featureStatusWire(false),
+		"enabled absent": {"name": "database"},
 	}
-	for name, pg := range cases {
+	for name, feat := range cases {
 		t.Run(name, func(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
-			post := echoKeyStub(t, "POST", "/features/pg/enable", func(key string) map[string]any {
-				return enableResponse(pg, map[string]any{"ref": key, "state": "succeeded"})
+			post := echoKeyStub(t, "POST", "/features/database/enable", func(key string) map[string]any {
+				return enableResponse(feat, map[string]any{"ref": key, "state": "succeeded"})
 			})
 			reg.Register(post)
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 			p := requireExit(t, err, output.ExitInternal)
 			if !strings.Contains(p.Hint, "--operation-ref "+sentKey(t, post.CapturedBody)) {
 				t.Fatalf("hint must point to the read-only query for the same key: %q", p.Hint)
@@ -407,7 +407,7 @@ func TestAppsFeatureEnable_ServerCodesAreNotRetriedWithANewKey(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
-			post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true,
+			post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Reusable: true,
 				Body: map[string]any{"code": tc.code, "msg": tc.name}}
 			reg.Register(post)
 			// A 40913 makes the command look up its own key once; this key was
@@ -415,7 +415,7 @@ func TestAppsFeatureEnable_ServerCodesAreNotRetriedWithANewKey(t *testing.T) {
 			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=", Reusable: true, Optional: true,
 				Body: map[string]any{"code": featureGatewayCodeBase + featureCodeOperationUnavailable, "msg": "operation_unavailable"}})
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 			p := requireExit(t, err, output.ExitAPI)
 			if len(post.CapturedBodies) != 1 {
 				t.Fatalf("POST sent %d times, want exactly 1", len(post.CapturedBodies))
@@ -522,13 +522,13 @@ func TestAppsFeatureEnable_ServerRejectionsAreExplainedWithoutTheOperationQuery(
 		t.Run(tc.name, func(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
-			post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true, Status: 400,
+			post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Reusable: true, Status: 400,
 				Body: map[string]any{"code": tc.code, "msg": tc.msg}}
 			reg.Register(post)
 			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=", Reusable: true, Optional: true,
 				Body: map[string]any{"code": featureGatewayCodeBase + featureCodeOperationUnavailable, "msg": "operation_unavailable"}})
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 			p := requireExit(t, err, output.ExitAPI)
 			if len(post.CapturedBodies) != 1 {
 				t.Fatalf("POST sent %d times, want exactly 1", len(post.CapturedBodies))
@@ -569,14 +569,14 @@ func TestAppsFeatureEnable_ServerRejectionsAreExplainedWithoutTheOperationQuery(
 func TestAppsFeatureEnable_NetworkRetryKeepsTheSameKey(t *testing.T) {
 	fastFeatureTiming(t)
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	failed := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Error: errors.New("connection reset by peer")}
+	failed := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Error: errors.New("connection reset by peer")}
 	reg.Register(failed)
-	ok := echoKeyStub(t, "POST", "/features/pg/enable", func(key string) map[string]any {
-		return enableResponse(pgStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
+	ok := echoKeyStub(t, "POST", "/features/database/enable", func(key string) map[string]any {
+		return enableResponse(featureStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
 	})
 	reg.Register(ok)
 
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
 	first, second := decodeBody(t, failed.CapturedBody), decodeBody(t, ok.CapturedBody)
@@ -589,11 +589,11 @@ func TestAppsFeatureEnable_NetworkFailureReportsKeyAndQueryWithoutConnection(t *
 	fastFeatureTiming(t)
 	factory, stdout, reg := newAppsExecuteFactory(t)
 	// --idempotent-key resumes: the kept operation is read first; none is kept yet.
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(pgStatusWire(false), nil)})
-	post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true, Error: errors.New("i/o timeout")}
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)})
+	post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Reusable: true, Error: errors.New("i/o timeout")}
 	reg.Register(post)
 
-	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 	p := requireExit(t, err, output.ExitNetwork)
 	if len(post.CapturedBodies) != 1+len(featureRetryBackoff) {
 		t.Fatalf("POST attempts = %d, want %d", len(post.CapturedBodies), 1+len(featureRetryBackoff))
@@ -620,14 +620,14 @@ func TestAppsFeatureEnable_UpperCaseKeyIsSentInTheServerForm(t *testing.T) {
 	fastFeatureTiming(t)
 	t.Setenv(envKeyMiaodaAuthnCode, "")
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	get := &httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(pgStatusWire(false), nil)}
+	get := &httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)}
 	reg.Register(get)
-	post := echoKeyStub(t, "POST", "/features/pg/enable", func(key string) map[string]any {
-		return enableResponse(pgStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
+	post := echoKeyStub(t, "POST", "/features/database/enable", func(key string) map[string]any {
+		return enableResponse(featureStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
 	})
 	reg.Register(post)
 
-	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", strings.ToUpper(testKey), "--as", "user"}, factory, stdout)
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", strings.ToUpper(testKey), "--as", "user"}, factory, stdout)
 	if err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
@@ -642,7 +642,7 @@ func TestAppsFeatureEnable_UpperCaseKeyIsSentInTheServerForm(t *testing.T) {
 
 func TestAppsFeatureEnable_RejectsMalformedIdempotentKeyWithoutNetwork(t *testing.T) {
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", "retry-1", "--as", "user"}, factory, stdout)
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", "retry-1", "--as", "user"}, factory, stdout)
 	p := requireExit(t, err, output.ExitValidation)
 	if !strings.Contains(p.Message, "--idempotent-key") {
 		t.Fatalf("message = %q", p.Message)
@@ -659,8 +659,8 @@ func TestAppsFeatureEnable_DeclaresRequiredFeatureFlagLimitedToPG(t *testing.T) 
 			feature = &AppsFeatureEnable.Flags[i]
 		}
 	}
-	if feature == nil || !feature.Required || !reflect.DeepEqual(feature.Enum, []string{"pg"}) {
-		t.Fatalf("--feature = %#v, want a required flag limited to pg", feature)
+	if feature == nil || !feature.Required || !reflect.DeepEqual(feature.Enum, []string{"database"}) {
+		t.Fatalf("--feature = %#v, want a required flag limited to database", feature)
 	}
 
 	factory, _, _ := newAppsExecuteFactory(t)
@@ -674,8 +674,8 @@ func TestAppsFeatureEnable_DeclaresRequiredFeatureFlagLimitedToPG(t *testing.T) 
 	if fl == nil {
 		t.Fatal("missing --feature flag")
 	}
-	if !strings.Contains(fl.Usage, "(pg)") {
-		t.Fatalf("--feature help = %q, want the allowed value (pg)", fl.Usage)
+	if !strings.Contains(fl.Usage, "(database)") {
+		t.Fatalf("--feature help = %q, want the allowed value (database)", fl.Usage)
 	}
 	if got := fl.Annotations[cobra.BashCompOneRequiredFlag]; !reflect.DeepEqual(got, []string{"true"}) {
 		t.Fatalf("--feature required annotation = %v, want [true]", got)
@@ -687,12 +687,13 @@ func TestAppsFeatureEnable_DeclaresRequiredFeatureFlagLimitedToPG(t *testing.T) 
 
 // Every malformed call stops before identity-backed requests: unsupported or
 // empty values fail the shared enum/Validate path, a missing flag fails cobra's
-// required-flag check, and positional words (including the earlier
-// `+feature-enable pg` spelling) hit the framework's positional rejection.
+// required-flag check, and positional words (such as
+// `+feature-enable database`) hit the framework's positional rejection.
 func TestAppsFeatureEnable_RejectsMalformedFeatureBeforeNetwork(t *testing.T) {
 	typed := map[string][]string{
 		"unsupported": {"+feature-enable", "--feature", "redis", "--app-id", "app_x", "--as", "user"},
-		"untrimmed":   {"+feature-enable", "--feature", " pg", "--app-id", "app_x", "--as", "user"},
+		"engine name": {"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"},
+		"untrimmed":   {"+feature-enable", "--feature", " database", "--app-id", "app_x", "--as", "user"},
 		"empty":       {"+feature-enable", "--feature", "", "--app-id", "app_x", "--as", "user"},
 		"dry-run":     {"+feature-enable", "--feature", "redis", "--app-id", "app_x", "--dry-run", "--as", "user"},
 	}
@@ -721,8 +722,8 @@ func TestAppsFeatureEnable_RejectsMalformedFeatureBeforeNetwork(t *testing.T) {
 	}{
 		"missing":         {[]string{"+feature-enable", "--app-id", "app_x", "--as", "user"}, `required flag(s) "feature" not set`},
 		"missing dry-run": {[]string{"+feature-enable", "--app-id", "app_x", "--dry-run", "--as", "user"}, `required flag(s) "feature" not set`},
-		"extra argument":  {[]string{"+feature-enable", "--feature", "pg", "redis", "--app-id", "app_x", "--as", "user"}, "positional arguments are not supported"},
-		"positional form": {[]string{"+feature-enable", "pg", "--app-id", "app_x", "--as", "user"}, "positional arguments are not supported"},
+		"extra argument":  {[]string{"+feature-enable", "--feature", "database", "redis", "--app-id", "app_x", "--as", "user"}, "positional arguments are not supported"},
+		"positional form": {[]string{"+feature-enable", "database", "--app-id", "app_x", "--as", "user"}, "positional arguments are not supported"},
 	}
 	for name, tc := range usage {
 		t.Run(name, func(t *testing.T) {
@@ -741,14 +742,14 @@ func TestAppsFeatureEnable_RejectsMalformedFeatureBeforeNetwork(t *testing.T) {
 
 func TestAppsFeatureEnable_DryRunSendsNothing(t *testing.T) {
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--dry-run", "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--dry-run", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("dry-run err=%v", err)
 	}
 	var env dryRunAPIEnvelope
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("decode dry-run: %v", err)
 	}
-	if len(env.API) != 1 || env.API[0].Method != "POST" || env.API[0].URL != "/open-apis/spark/v1/apps/app_x/features/pg/enable" {
+	if len(env.API) != 1 || env.API[0].Method != "POST" || env.API[0].URL != "/open-apis/spark/v1/apps/app_x/features/database/enable" {
 		t.Fatalf("dry-run plan without a key = %+v, want only the enable POST", env.API)
 	}
 	body := env.API[0].Body
@@ -761,7 +762,7 @@ func TestAppsFeatureEnable_DryRunSendsNothing(t *testing.T) {
 	reg.Verify(t)
 
 	stdout.Reset()
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--dry-run", "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--dry-run", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("dry-run err=%v", err)
 	}
 	env = dryRunAPIEnvelope{}
@@ -777,21 +778,21 @@ func TestAppsFeatureEnable_DryRunSendsNothing(t *testing.T) {
 func TestAppsFeatureEnable_WaitsOnlyWhileRunning(t *testing.T) {
 	fastFeatureTiming(t)
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(pgStatusWire(false), nil)})
-	post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable",
-		Body: enableResponse(pgStatusWire(false), map[string]any{"ref": testKey, "state": "running"})}
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)})
+	post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable",
+		Body: enableResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "running"})}
 	reg.Register(post)
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey,
-		Body: featuresResponse(pgStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
+		Body: featuresResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey,
-		Body: featuresResponse(pgStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})})
+		Body: featuresResponse(featureStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})})
 
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
 	data := decodeSuccessData(t, stdout)
 	op, _ := data["operation"].(map[string]any)
-	if op["state"] != "succeeded" || !reflect.DeepEqual(data["feature"], map[string]any{"name": "pg", "enabled": true}) {
+	if op["state"] != "succeeded" || !reflect.DeepEqual(data["feature"], map[string]any{"name": "database", "enabled": true}) {
 		t.Fatalf("output = %v, want the polled succeeded state", data)
 	}
 	if len(post.CapturedBodies) != 1 {
@@ -807,19 +808,19 @@ func TestAppsFeatureEnable_ConflictAfterReplayFollowsTheOwnOperation(t *testing.
 	fastFeatureTiming(t)
 	t.Setenv(envKeyMiaodaAuthnCode, "")
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(pgStatusWire(false), nil)})
-	lost := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Error: errors.New("connection reset by peer")}
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)})
+	lost := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Error: errors.New("connection reset by peer")}
 	reg.Register(lost)
-	raced := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Status: 400,
+	raced := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Status: 400,
 		Body: map[string]any{"code": featureGatewayCodeBase + featureCodeKeyConflict, "msg": "operation conflict"}}
 	reg.Register(raced)
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey,
-		Body: featuresResponse(pgStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
+		Body: featuresResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey,
-		Body: featuresResponse(pgStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})})
+		Body: featuresResponse(featureStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})})
 	forbidEnablePOST(t, reg, "the kept operation must be followed, not re-sent")
 
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
 	data := decodeSuccessData(t, stdout)
@@ -845,13 +846,13 @@ func TestAppsFeatureEnable_PollFailureKeepsTheOutcomeUnknown(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
 			// --idempotent-key reads the kept operation first: none is kept yet.
-			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(pgStatusWire(false), nil)})
-			reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/pg/enable",
-				Body: enableResponse(pgStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
+			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)})
+			reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/database/enable",
+				Body: enableResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
 			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Status: 400,
 				Body: map[string]any{"code": code, "msg": name}})
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 			p := requireExit(t, err, output.ExitAPI)
 			for _, want := range []string{"outcome is unknown", "--idempotent-key " + testKey, "--operation-ref " + testKey} {
 				if !strings.Contains(p.Hint, want) {
@@ -904,12 +905,12 @@ func TestAppsFeatureEnable_ServerWithoutFeatureAPIIsFinal(t *testing.T) {
 	t.Run("new request", func(t *testing.T) {
 		fastFeatureTiming(t)
 		factory, stdout, reg := newAppsExecuteFactory(t)
-		post := gatewayInternalStub("POST", "/features/pg/enable")
+		post := gatewayInternalStub("POST", "/features/database/enable")
 		reg.Register(post)
 		get := gatewayInternalStub("GET", "/open-apis/spark/v1/apps/app_x/features")
 		reg.Register(get)
 
-		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 		requireFeatureAPIMissing(t, err)
 		if len(post.CapturedBodies) != 1 || len(get.CapturedBodies) != 1 {
 			t.Fatalf("POST/GET = %d/%d, want one enable and one read-only re-check", len(post.CapturedBodies), len(get.CapturedBodies))
@@ -922,7 +923,7 @@ func TestAppsFeatureEnable_ServerWithoutFeatureAPIIsFinal(t *testing.T) {
 		reg.Register(get)
 		forbidEnablePOST(t, reg, "a server without the API must not get the write")
 
-		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 		requireFeatureAPIMissing(t, err)
 		if len(get.CapturedBodies) != 2 {
 			t.Fatalf("GET = %d, want the kept-operation read and one re-check", len(get.CapturedBodies))
@@ -936,11 +937,11 @@ func TestAppsFeatureEnable_ServerWithoutFeatureAPIIsFinal(t *testing.T) {
 func TestAppsFeatureEnable_PassingGatewayFailureKeepsTheResumeHint(t *testing.T) {
 	fastFeatureTiming(t)
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	post := gatewayInternalStub("POST", "/features/pg/enable")
+	post := gatewayInternalStub("POST", "/features/database/enable")
 	reg.Register(post)
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(pgStatusWire(false), nil)})
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(featureStatusWire(false), nil)})
 
-	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 	p := requireExit(t, err, output.ExitAPI)
 	if p.Subtype != errs.SubtypeServerError || !p.Retryable {
 		t.Fatalf("subtype/retryable = %q/%t, want the classifier's %q/true", p.Subtype, p.Retryable, errs.SubtypeServerError)
@@ -970,12 +971,12 @@ func TestAppsFeatures_PassingGatewayFailureIsReadAgain(t *testing.T) {
 	factory, stdout, reg := newAppsExecuteFactory(t)
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Status: 500,
 		Body: map[string]any{"code": featureCodeGatewayInternal, "msg": "Internal Error"}})
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(pgStatusWire(true), nil)})
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(featureStatusWire(true), nil)})
 
 	if err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
-	if got := decodeSuccessData(t, stdout)["features"]; !reflect.DeepEqual(got, []any{map[string]any{"name": "pg", "enabled": true}}) {
+	if got := decodeSuccessData(t, stdout)["features"]; !reflect.DeepEqual(got, []any{map[string]any{"name": "database", "enabled": true}}) {
 		t.Fatalf("features = %v", got)
 	}
 	reg.Verify(t)
@@ -1022,11 +1023,11 @@ func TestAppsFeatures_AuthenticationFailureAsksForReauthorization(t *testing.T) 
 		t.Run(tc.name+"/enable", func(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
-			post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true, Status: tc.status, Body: tc.body}
+			post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Reusable: true, Status: tc.status, Body: tc.body}
 			reg.Register(post)
 			forbidFeaturesGET(t, reg, "an authentication failure needs no operation lookup")
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 			requireFeatureReauthorization(t, err, tc.code)
 			if len(post.CapturedBodies) != 1 {
 				t.Fatalf("POST sent %d times, want exactly 1", len(post.CapturedBodies))
@@ -1038,7 +1039,7 @@ func TestAppsFeatures_AuthenticationFailureAsksForReauthorization(t *testing.T) 
 			reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Status: tc.status, Body: tc.body})
 			forbidEnablePOST(t, reg, "an authentication failure must not reach the write")
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 			requireFeatureReauthorization(t, err, tc.code)
 		})
 		for _, extra := range [][]string{nil, {"--operation-ref", testKey}} {
@@ -1059,14 +1060,14 @@ func TestAppsFeatureEnable_WaitTimeoutKeepsKeyAndDoesNotClaimRollback(t *testing
 	featureEnableMaxWait = 20 * time.Millisecond
 	factory, stdout, reg := newAppsExecuteFactory(t)
 	running := map[string]any{"ref": testKey, "state": "running"}
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(pgStatusWire(false), nil)})
-	post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Reusable: true,
-		Body: enableResponse(pgStatusWire(false), running)}
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)})
+	post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Reusable: true,
+		Body: enableResponse(featureStatusWire(false), running)}
 	reg.Register(post)
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Reusable: true, Optional: true,
-		Body: featuresResponse(pgStatusWire(false), running)})
+		Body: featuresResponse(featureStatusWire(false), running)})
 
-	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 	p := requireExit(t, err, output.ExitNetwork)
 	if p.Subtype != errs.SubtypeNetworkTimeout {
 		t.Fatalf("subtype = %q, want timeout", p.Subtype)
@@ -1094,11 +1095,11 @@ func TestAppsFeatureEnable_TerminalOperationStatesAreNotSuccessAndNotWaited(t *t
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
 			forbidFeaturesGET(t, reg, "a terminal state must not be polled")
-			post := echoKeyStub(t, "POST", "/features/pg/enable", func(key string) map[string]any {
-				return enableResponse(pgStatusWire(false), map[string]any{"ref": key, "state": tc.state, "error_reason": "resource_request_unknown"})
+			post := echoKeyStub(t, "POST", "/features/database/enable", func(key string) map[string]any {
+				return enableResponse(featureStatusWire(false), map[string]any{"ref": key, "state": tc.state, "error_reason": "resource_request_unknown"})
 			})
 			reg.Register(post)
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 			p := requireExit(t, err, output.ExitAPI)
 			if p.Subtype != tc.wantSub {
 				t.Fatalf("subtype = %q, want %q", p.Subtype, tc.wantSub)
@@ -1120,14 +1121,14 @@ func TestAppsFeatureEnable_ConflictedWhileWaitingStopsImmediately(t *testing.T) 
 	fastFeatureTiming(t)
 	featureEnableMaxWait = time.Hour // a terminal state must end the wait, not the deadline
 	factory, stdout, reg := newAppsExecuteFactory(t)
-	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(pgStatusWire(false), nil)})
-	reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/pg/enable",
-		Body: enableResponse(pgStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)})
+	reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/database/enable",
+		Body: enableResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
 	poll := &httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Reusable: true,
-		Body: featuresResponse(pgStatusWire(false), map[string]any{"ref": testKey, "state": "conflicted", "error_reason": "superseded"})}
+		Body: featuresResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "conflicted", "error_reason": "superseded"})}
 	reg.Register(poll)
 
-	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 	p := requireExit(t, err, output.ExitAPI)
 	if p.Subtype != errs.SubtypeConflict {
 		t.Fatalf("subtype = %q, want conflict", p.Subtype)
@@ -1157,12 +1158,12 @@ func TestAppsFeatureEnable_ResumeUsesTheKeptOperation(t *testing.T) {
 			fastFeatureTiming(t)
 			factory, stdout, reg := newAppsExecuteFactory(t)
 			reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features?operation_ref=" + testKey,
-				Body: featuresResponse(pgStatusWire(tc.enabled), tc.op)})
-			post := &httpmock.Stub{Method: "POST", URL: "/features/pg/enable", Optional: !tc.wantPost,
-				Body: enableResponse(pgStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})}
+				Body: featuresResponse(featureStatusWire(tc.enabled), tc.op)})
+			post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Optional: !tc.wantPost,
+				Body: enableResponse(featureStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})}
 			reg.Register(post)
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 			if tc.wantExit != 0 {
 				requireExit(t, err, tc.wantExit)
 				if stdout.Len() != 0 {
@@ -1189,12 +1190,12 @@ func TestAppsFeatureEnable_ResumeOfARunningOperationWaitsWithoutResending(t *tes
 	fastFeatureTiming(t)
 	factory, stdout, reg := newAppsExecuteFactory(t)
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey,
-		Body: featuresResponse(pgStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
+		Body: featuresResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
 	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey,
-		Body: featuresResponse(pgStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})})
+		Body: featuresResponse(featureStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})})
 	forbidEnablePOST(t, reg, "a running operation is waited on, not re-sent")
 
-	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout); err != nil {
+	if err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout); err != nil {
 		t.Fatalf("execute err=%v", err)
 	}
 	if data := decodeSuccessData(t, stdout); data["idempotent_key"] != testKey {
@@ -1236,7 +1237,7 @@ func TestAppsFeatureEnable_ResumeOfAnUnavailableOperationDoesNotSend(t *testing.
 			reg.Register(get)
 			forbidEnablePOST(t, reg, "a key the server does not keep must not be re-sent")
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 			p := requireExit(t, err, output.ExitAPI)
 			if len(get.CapturedBodies) != 1 {
 				t.Fatalf("GET sent %d times, want exactly 1", len(get.CapturedBodies))
@@ -1356,7 +1357,7 @@ func TestAppsFeatureEnable_ResumeReadFailureKeepsTheCauseAndTheKey(t *testing.T)
 			reg.Register(&get)
 			forbidEnablePOST(t, reg, "the outcome of the kept operation is unknown")
 
-			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+			err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
 			p := requireExit(t, err, tc.wantExit)
 			if len(get.CapturedBodies) != tc.wantGETs {
 				t.Fatalf("GET sent %d times, want %d", len(get.CapturedBodies), tc.wantGETs)

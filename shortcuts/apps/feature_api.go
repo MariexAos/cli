@@ -20,8 +20,10 @@ import (
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
-// featurePG is the only feature +feature-enable accepts in this release (PostgreSQL).
-const featurePG = "pg"
+// featurePG is the only feature +feature-enable accepts in this release: the
+// app's database (PostgreSQL). The public name says what the app gets, not
+// which engine backs it.
+const featurePG = "database"
 
 // featureEnableWaitLimit bounds how long +feature-enable waits for an operation
 // the server reports as running. The server executes the enable synchronously,
@@ -511,7 +513,7 @@ func featureConflictHint(appID, key string) string {
 // names no operation this caller can follow, so the same key can never
 // succeed and only a new attempt can help.
 func featureKeyNotKeptHint(appID, key string) string {
-	return fmt.Sprintf("idempotent_key=%s is no longer usable for app %s (replaced by a later operation, owned by another caller, or never created); check the database state with `lark-cli apps +features --app-id %s`: if pg is already enabled there is nothing to do; if it is still needed, run `lark-cli apps +feature-enable --feature %s --app-id %s` without --idempotent-key so a new key is generated; do not retry with the same key", key, appID, appID, featurePG, appID)
+	return fmt.Sprintf("idempotent_key=%s is no longer usable for app %s (replaced by a later operation, owned by another caller, or never created); check the database state with `lark-cli apps +features --app-id %s`: if database is already enabled there is nothing to do; if it is still needed, run `lark-cli apps +feature-enable --feature %s --app-id %s` without --idempotent-key so a new key is generated; do not retry with the same key", key, appID, appID, featurePG, appID)
 }
 
 // explainFeatureKeyNotKept reports whether err is the server's 40915 answer

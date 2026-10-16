@@ -27,11 +27,11 @@ var featureEnableMaxWait = featureEnableWaitLimit
 var AppsFeatureEnable = common.Shortcut{
 	Service:     appsService,
 	Command:     "+feature-enable",
-	Description: "Enable an app business feature on the server (pg: PostgreSQL database)",
+	Description: "Enable an app business feature on the server (database: the app's PostgreSQL database)",
 	Risk:        "write",
 	Tips: []string{
-		"Example: lark-cli apps +feature-enable --feature pg --app-id <app_id>",
-		"Example: lark-cli apps +feature-enable --feature pg --app-id <app_id> --idempotent-key b3d93913-e777-4968-a00c-afd0a1c7ce44",
+		"Example: lark-cli apps +feature-enable --feature database --app-id <app_id>",
+		"Example: lark-cli apps +feature-enable --feature database --app-id <app_id> --idempotent-key b3d93913-e777-4968-a00c-afd0a1c7ce44",
 		"Tip: success means the server committed the feature; follow next_steps in the output: locally run `lark-cli apps +env-pull --app-id <app_id>` and restart the dev process, while in a Miaoda sandbox the platform applies the database by itself.",
 	},
 	// Resuming and waiting read the operation through the features endpoint,

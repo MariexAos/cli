@@ -49,7 +49,7 @@ func TestAppsFeaturesDryRun(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		t.Cleanup(cancel)
 		result, err := clie2e.RunCmd(ctx, clie2e.Request{
-			Args:      []string{"apps", "+features", "pg", "--app-id", "app_x", "--dry-run"},
+			Args:      []string{"apps", "+features", "database", "--app-id", "app_x", "--dry-run"},
 			DefaultAs: "user",
 		})
 		require.NoError(t, err)
@@ -72,13 +72,13 @@ func TestAppsFeatureEnableDryRun(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		t.Cleanup(cancel)
 		result, err := clie2e.RunCmd(ctx, clie2e.Request{
-			Args:      []string{"apps", "+feature-enable", "--feature", "pg", "--app-id", "app_x", "--dry-run"},
+			Args:      []string{"apps", "+feature-enable", "--feature", "database", "--app-id", "app_x", "--dry-run"},
 			DefaultAs: "user",
 		})
 		require.NoError(t, err)
 		result.AssertExitCode(t, 0)
 		assert.Equal(t, "POST", clie2e.DryRunGet(result.Stdout, "api.0.method").String())
-		assert.Equal(t, "/open-apis/spark/v1/apps/app_x/features/pg/enable", clie2e.DryRunGet(result.Stdout, "api.0.url").String())
+		assert.Equal(t, "/open-apis/spark/v1/apps/app_x/features/database/enable", clie2e.DryRunGet(result.Stdout, "api.0.url").String())
 		assert.Contains(t, clie2e.DryRunGet(result.Stdout, "api.0.body.idempotent_key").String(), "execution time")
 		assert.False(t, clie2e.DryRunGet(result.Stdout, "api.0.body.feature_protocol").Exists())
 		assert.False(t, clie2e.DryRunGet(result.Stdout, "api.0.body.expected_config_revision").Exists())
@@ -89,7 +89,7 @@ func TestAppsFeatureEnableDryRun(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		t.Cleanup(cancel)
 		result, err := clie2e.RunCmd(ctx, clie2e.Request{
-			Args:      []string{"apps", "+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "--dry-run"},
+			Args:      []string{"apps", "+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "--dry-run"},
 			DefaultAs: "user",
 		})
 		require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestAppsFeatureEnableDryRun(t *testing.T) {
 		"MissingFeature":     {[]string{"apps", "+feature-enable", "--app-id", "app_x", "--dry-run"}, `required flag(s) "feature" not set`},
 		"UnsupportedFeature": {[]string{"apps", "+feature-enable", "--feature", "redis", "--app-id", "app_x", "--dry-run"}, "invalid value"},
 		"EmptyFeature":       {[]string{"apps", "+feature-enable", "--feature", "", "--app-id", "app_x", "--dry-run"}, "--feature is required"},
-		"MalformedKey":       {[]string{"apps", "+feature-enable", "--feature", "pg", "--app-id", "app_x", "--idempotent-key", "retry-1", "--dry-run"}, "--idempotent-key"},
+		"MalformedKey":       {[]string{"apps", "+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", "retry-1", "--dry-run"}, "--idempotent-key"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -122,13 +122,13 @@ func TestAppsFeatureEnableDryRun(t *testing.T) {
 		})
 	}
 
-	// Positional words, including the earlier `+feature-enable pg` spelling,
+	// Positional words, such as `+feature-enable database`,
 	// go through the framework's existing positional rejection like every
 	// other shortcut; this pins only that they are refused with that message
 	// and no plan, not the exit code the shared root handler assigns.
 	for name, args := range map[string][]string{
-		"ExtraArgument":  {"apps", "+feature-enable", "--feature", "pg", "redis", "--app-id", "app_x", "--dry-run"},
-		"PositionalForm": {"apps", "+feature-enable", "pg", "--app-id", "app_x", "--dry-run"},
+		"ExtraArgument":  {"apps", "+feature-enable", "--feature", "database", "redis", "--app-id", "app_x", "--dry-run"},
+		"PositionalForm": {"apps", "+feature-enable", "database", "--app-id", "app_x", "--dry-run"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

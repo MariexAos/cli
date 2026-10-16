@@ -216,8 +216,8 @@ func TestAppsEnvPullDB_DisableWithAMissingConnectionKeyKeepsLocalValues(t *testi
 	}
 }
 
-// The server exports a dev connection (e.g. after +feature-enable --feature pg on a
-// multi-environment app): the stale "true" flag in .env.local is replaced, and
+// The server exports a dev connection (e.g. after +feature-enable --feature database on
+// a multi-environment app): the stale "true" flag in .env.local is replaced, and
 // the CLI only asks for a restart — it never restarts anything itself and does
 // not claim the database is reachable.
 func TestAppsEnvPullDB_ExportedConnectionReplacesStaleDisableFlag(t *testing.T) {
@@ -330,7 +330,7 @@ func TestAppsEnvPullDB_EmptyConnectionIsNotReportedAsDatabase(t *testing.T) {
 
 // A single-environment app has no dev database: the server answers with an
 // error, which passes through unchanged and leaves .env.local untouched. An
-// enabled pg switch alone is never treated as local readiness.
+// enabled database switch alone is never treated as local readiness.
 func TestAppsEnvPullDB_SingleEnvironmentErrorLeavesFileUntouched(t *testing.T) {
 	factory, stdout, _, reg := newEnvPullPGFactory(t)
 	projectDir := t.TempDir()

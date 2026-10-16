@@ -2,31 +2,31 @@
 
 > **前置条件：** 先阅读 [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md)（认证 / 全局参数 / 安全）。
 
-查询和启用应用业务能力。本期只有 `pg`（PostgreSQL 数据库）。运行时命令事实以 `lark-cli apps +features --help`、`lark-cli apps +feature-enable --help` 为准。
+查询和启用应用业务能力。本期只有 `database`（应用的数据库，PostgreSQL）。运行时命令事实以 `lark-cli apps +features --help`、`lark-cli apps +feature-enable --help` 为准。
 
 ## 心智模型
 
-- `full_stack` 是工程与发布契约，**不等于已有数据库**。应用可以先无 PG，需要保存业务数据时再显式启用。
+- `full_stack` 是工程与发布契约，**不等于已有数据库**。应用可以先没有数据库，需要保存业务数据时再显式启用。
 - `+features` 只读（`spark:app:read`）：每个能力只返回 `name` 和 `enabled`。不申请资源、不返回连接串；`enabled=true` 只表示服务端已开启，**不代表本地开发已就绪**。
-- `+feature-enable --feature pg` 是服务端写操作（声明 `spark:app:read` + `spark:app:write`）：只需 `--app-id` 和 `--feature pg`（本期只支持 `pg`），CLI 自动生成 `idempotent_key` 并只提交它。成功只表示**服务端能力已开启**，生效方式看输出的 `next_steps`：本地开发需 `+env-pull` 并重启完整本地开发进程；在妙搭沙箱里由平台自动生效，不需要 `+env-pull`。两种情况都要再做一次真实读写验证。
+- `+feature-enable --feature database` 是服务端写操作（声明 `spark:app:read` + `spark:app:write`）：只需 `--app-id` 和 `--feature database`（本期只支持 `database`），CLI 自动生成 `idempotent_key` 并只提交它。成功只表示**服务端能力已开启**，生效方式看输出的 `next_steps`：本地开发需 `+env-pull` 并重启完整本地开发进程；在妙搭沙箱里由平台自动生效，不需要 `+env-pull`。两种情况都要再做一次真实读写验证。
 - 它不改本地业务代码、不拆已有数据库、不推代码、不发布，也不会重启任何本地进程。
 
 ## 何时用
 
-- 新建或接手的应用要开始保存业务数据：先 `+features`，`pg` 为 `enabled=false` 时，经用户确认数据库需求后执行 `+feature-enable --feature pg`。
-- 网页或另一台电脑已开通 PG：不需要 `+feature-enable`，直接 `+env-pull` 并重启本地进程。
-- `+features` 没列出 `pg`、命令报错，或 `+feature-enable` 被服务端拒绝：该应用不走本入口，转述错误信息；需要数据库时按 [`lark-apps-cloud-dev.md`](lark-apps-cloud-dev.md) 经妙搭云端会话添加。
+- 新建或接手的应用要开始保存业务数据：先 `+features`，`database` 为 `enabled=false` 时，经用户确认数据库需求后执行 `+feature-enable --feature database`。
+- 网页或另一台电脑已开通数据库：不需要 `+feature-enable`，直接 `+env-pull` 并重启本地进程。
+- `+features` 没列出 `database`、命令报错，或 `+feature-enable` 被服务端拒绝：该应用不走本入口，转述错误信息；需要数据库时按 [`lark-apps-cloud-dev.md`](lark-apps-cloud-dev.md) 经妙搭云端会话添加。
 
 ## 示例
 
 ```bash
 lark-cli apps +features --app-id <app_id>
 
-lark-cli apps +feature-enable --feature pg --app-id <app_id> --dry-run
-lark-cli apps +feature-enable --feature pg --app-id <app_id>
+lark-cli apps +feature-enable --feature database --app-id <app_id> --dry-run
+lark-cli apps +feature-enable --feature database --app-id <app_id>
 
 # 上一次失败/超时后，用错误提示里的原 idempotent_key（示例值需替换）续同一次请求或查询
-lark-cli apps +feature-enable --feature pg --app-id <app_id> --idempotent-key b3d93913-e777-4968-a00c-afd0a1c7ce44
+lark-cli apps +feature-enable --feature database --app-id <app_id> --idempotent-key b3d93913-e777-4968-a00c-afd0a1c7ce44
 lark-cli apps +features --app-id <app_id> --operation-ref b3d93913-e777-4968-a00c-afd0a1c7ce44
 ```
 
@@ -34,7 +34,7 @@ lark-cli apps +features --app-id <app_id> --operation-ref b3d93913-e777-4968-a00
 
 | 结果 | 含义 | 下一步 |
 |---|---|---|
-| `ok:true`，`feature.enabled=true` | 服务端已开启 PG（含早已开启、无 `operation` 的情况） | 按 `next_steps`：本地在项目里执行 `+env-pull`，停掉并重启 `npm run dev`；妙搭沙箱里平台自动生效，稍候即可。最后都验证一次真实读写 |
+| `ok:true`，`feature.enabled=true` | 服务端已开启数据库（含早已开启、无 `operation` 的情况） | 按 `next_steps`：本地在项目里执行 `+env-pull`，停掉并重启 `npm run dev`；妙搭沙箱里平台自动生效，稍候即可。最后都验证一次真实读写 |
 | `+env-pull` 报 dev 数据库环境未就绪（`next_action=db_env_create`） | 应用只有 online 单库，没有 dev | **不能当作本地数据库已就绪**，不要用线上库做本地开发；拆分 dev 是不可逆操作，只有用户明确确认后才按 [`lark-apps-db.md`](lark-apps-db.md) 先 `+db-env-create --environment dev --dry-run` |
 | exit 1，`subtype=failed_precondition`，提示应用不是新契约应用 | 该应用不能通过 CLI 开数据库 | 按 [`lark-apps-cloud-dev.md`](lark-apps-cloud-dev.md) 经妙搭云端会话添加；重试本命令没有用 |
 | exit 1，`subtype=failed_precondition`，提示 `idempotent_key` 已不可用 | 该 key 已作废：被后续操作取代、不属于当前调用者或不存在 | 先 `+features` 看当前状态，已开启就不用再开；仍需开启就不带 `--idempotent-key` 重新执行（CLI 生成新 key）；不要用同一个 key 重试 |
@@ -50,7 +50,7 @@ lark-cli apps +features --app-id <app_id> --operation-ref b3d93913-e777-4968-a00
 
 ## 本地生效
 
-`+env-pull` 只按服务端返回的环境变量写 `.env.local`，不查询 `+features`，输出也**不代表** `pg` 能力是否开启（业务开关只看本命令的 `enabled`）：
+`+env-pull` 只按服务端返回的环境变量写 `.env.local`，不查询 `+features`，输出也**不代表** `database` 能力是否开启（业务开关只看本命令的 `enabled`）：
 
 - 本地数据库集成被禁用：仅当返回 `FORCE_FRAMEWORK_DISABLE_DATAPASS="true"` 且 `SUDA_DATABASE_URL`、`FORCE_DB_CONNECT_URL` 两个键都存在且为空时，把这两个键与 `FORCE_DB_BRANCH` 写成空值；缺任一键不清除本地旧值。
 - 已导出数据库连接：`FORCE_FRAMEWORK_DISABLE_DATAPASS="false"` 且非空 `SUDA_DATABASE_URL` 时 `FORCE_DB_BRANCH=dev`；不代表数据库真实可连通。
