@@ -20,9 +20,12 @@ import (
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 
 	"github.com/larksuite/cli/errs"
+	extcred "github.com/larksuite/cli/extension/credential"
+	envprovider "github.com/larksuite/cli/extension/credential/env"
 	internalauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/credential"
+	"github.com/larksuite/cli/internal/envvars"
 	"github.com/larksuite/cli/internal/output"
 )
 
@@ -967,5 +970,48 @@ func TestCallAPI_ParseJSONFailureWrapsAsAPI(t *testing.T) {
 	}
 	if output.ExitCodeOf(err) != output.ExitInternal {
 		t.Errorf("ExitCodeOf = %d, want %d (internal)", output.ExitCodeOf(err), output.ExitInternal)
+	}
+}
+
+// TestResolveAccessToken_EnvCredentialsUserTokenMissing_HintAvoidsAuth pins
+// that environment-variable credentials, which disable the `auth` command
+// group, do not point user-token recovery at `lark-cli auth login`.
+func TestResolveAccessToken_EnvCredentialsUserTokenMissing_HintAvoidsAuth(t *testing.T) {
+	t.Setenv(envvars.CliAppID, "cli_env_test")
+	t.Setenv(envvars.CliAppSecret, "env-secret")
+	t.Setenv(envvars.CliUserAccessToken, "")
+	t.Setenv(envvars.CliTenantAccessToken, "")
+	t.Setenv(envvars.CliTenantAccessTokenSource, "")
+	t.Setenv(envvars.CliStrictMode, "")
+	t.Setenv(envvars.CliDefaultAs, "")
+	ac := &APIClient{
+		HTTP:       &http.Client{},
+		Credential: credential.NewCredentialProvider([]extcred.Provider{&envprovider.Provider{}}, nil, &failingTokenResolver{}, nil),
+		Config:     &core.CliConfig{AppID: "cli_env_test", AppSecret: "env-secret", Brand: core.BrandFeishu},
+	}
+	// Invocation setup resolves the account first, which selects the env source.
+	if _, err := ac.Credential.ResolveAccount(context.Background()); err != nil {
+		t.Fatalf("ResolveAccount() error = %v", err)
+	}
+
+	_, err := ac.resolveAccessToken(context.Background(), core.AsUser)
+	var authErr *errs.AuthenticationError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected *errs.AuthenticationError, got %T (%v)", err, err)
+	}
+	if authErr.Subtype != errs.SubtypeTokenMissing {
+		t.Errorf("Subtype = %v, want %v", authErr.Subtype, errs.SubtypeTokenMissing)
+	}
+	if strings.Contains(authErr.Hint, "auth login") {
+		t.Errorf("hint = %q, must not point at the disabled auth command group", authErr.Hint)
+	}
+	for _, want := range []string{envvars.CliAppID, envvars.CliUserAccessToken} {
+		if !strings.Contains(authErr.Hint, want) {
+			t.Errorf("hint = %q, want it to mention %s", authErr.Hint, want)
+		}
+	}
+	var unavailable *credential.TokenUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Source != "env" {
+		t.Errorf("error = %v, want env TokenUnavailableError cause", err)
 	}
 }

@@ -14,7 +14,6 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/larksuite/cli/errs"
-	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/vfs"
 )
 
@@ -34,13 +33,26 @@ func sanitizeID(id string) string {
 	return safeIDChars.ReplaceAllString(id, "_")
 }
 
-func tokenStorageLockDir() string {
-	return filepath.Join(core.GetConfigDir(), "locks")
+// tokenStorageLockDir places refresh locks beside the stored tokens they
+// protect. Token storage is shared by every workspace (and by every config
+// directory) of one OS user, so the lock must not depend on the workspace:
+// otherwise two workspaces could refresh the same single-use refresh_token
+// concurrently and one of them would clear the account.
+func tokenStorageLockDir() (string, error) {
+	root, err := tokenStorageRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "locks"), nil
 }
 
-func tokenStorageLockPath(appID, userOpenID string) string {
-	return filepath.Join(tokenStorageLockDir(), fmt.Sprintf("refresh_%s_%s.lock",
-		sanitizeID(appID), sanitizeID(userOpenID)))
+func tokenStorageLockPath(appID, userOpenID string) (string, error) {
+	dir, err := tokenStorageLockDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("refresh_%s_%s.lock",
+		sanitizeID(appID), sanitizeID(userOpenID))), nil
 }
 
 func tokenStorageProcessLock(appID, userOpenID string) chan struct{} {
@@ -105,15 +117,18 @@ func withTokenStorageLockContext(ctx context.Context, appID, userOpenID string, 
 	}
 	defer func() { processLock <- struct{}{} }()
 
-	lockDir := tokenStorageLockDir()
-	if err := vfs.MkdirAll(lockDir, 0700); err != nil {
+	lockPath, err := tokenStorageLockPath(appID, userOpenID)
+	if err == nil {
+		err = vfs.MkdirAll(filepath.Dir(lockPath), 0700)
+	}
+	if err != nil {
 		return errs.NewInternalError(errs.SubtypeFileIO,
 			"failed to prepare token storage lock").
 			WithCause(err).
 			WithHint("Check whether local CLI storage is accessible, then retry.")
 	}
 
-	fileLock := flock.New(tokenStorageLockPath(appID, userOpenID))
+	fileLock := flock.New(lockPath)
 	locked, err := fileLock.TryLockContext(lockContext, tokenStorageLockRetryDelay)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {

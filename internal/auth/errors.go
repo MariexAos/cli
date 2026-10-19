@@ -60,6 +60,47 @@ func newNeedUserAuthorizationError(userOpenID string, cause error, hint recovery
 	return recovery.Attach(e, hint)
 }
 
+// newConsumedRefreshTokenAuthorizationError reports the missing UAT left
+// behind after this process cleared a token whose refresh_token the server
+// reported as already used or revoked. It keeps the need_user_authorization
+// type, subtype, and message marker, and adds the reason and the
+// credential-copy guidance so the re-authorization prompt is explainable.
+func newConsumedRefreshTokenAuthorizationError(userOpenID string, refreshErr error) error {
+	err := newNeedUserAuthorizationError(userOpenID, refreshErr, consumedRefreshTokenHint())
+	if problem, ok := errs.ProblemOf(err); ok {
+		problem.Message += ": " + consumedRefreshTokenReason(refreshErr) + ", so the local token was cleared"
+	}
+	return err
+}
+
+// isConsumedRefreshTokenError reports whether the token endpoint rejected a
+// refresh_token as already used or revoked. Refresh tokens are single-use, so
+// both normally mean another holder of the same credentials refreshed first.
+func isConsumedRefreshTokenError(err error) bool {
+	problem, ok := errs.ProblemOf(err)
+	return ok && (problem.Subtype == errs.SubtypeRefreshTokenReused ||
+		problem.Subtype == errs.SubtypeRefreshTokenRevoked)
+}
+
+func consumedRefreshTokenReason(err error) string {
+	if problem, ok := errs.ProblemOf(err); ok && problem.Subtype == errs.SubtypeRefreshTokenRevoked {
+		return "the stored refresh_token was revoked; refresh tokens are single-use, so another lark-cli process or environment most likely used it first"
+	}
+	return "the stored refresh_token was already used by another lark-cli process or environment"
+}
+
+// consumedRefreshTokenHint explains how one refresh_token reaches two holders
+// before pointing at the canonical re-authorization recovery.
+func consumedRefreshTokenHint() recovery.Hint {
+	return recovery.JoinHints("\n",
+		recovery.Join("", recovery.Text("a refresh_token can be used only once; "+
+			"check whether the lark-cli config directory or token storage directory (including LARKSUITE_CLI_DATA_DIR) "+
+			"was copied or synced to another machine, container, or sandbox, or restored from a snapshot or image, "+
+			"and stop the other copy from refreshing before re-authorizing")),
+		recovery.UserAuthorization(),
+	)
+}
+
 // IsNeedUserAuthorizationError reports whether err represents a missing-UAT
 // failure. It matches the legacy *NeedAuthorizationError sentinel, which is
 // preserved in the Cause chain of the typed missing-UAT error, so errors.As

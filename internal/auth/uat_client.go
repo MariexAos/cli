@@ -14,6 +14,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -86,7 +87,7 @@ func GetValidAccessToken(ctx context.Context, httpClient *http.Client, opts UATC
 		return nil, err
 	}
 	if stored == nil {
-		return nil, NewNeedUserAuthorizationError(opts.UserOpenId)
+		return nil, missingStoredTokenError(opts.AppId, opts.UserOpenId)
 	}
 
 	if TokenStatus(stored) == "valid" {
@@ -98,9 +99,24 @@ func GetValidAccessToken(ctx context.Context, httpClient *http.Client, opts UATC
 		return nil, err
 	}
 	if refreshed == nil {
-		return nil, NewNeedUserAuthorizationError(opts.UserOpenId)
+		return nil, missingStoredTokenError(opts.AppId, opts.UserOpenId)
 	}
 	return accessTokenResultFromStored(ctx, refreshed, opts)
+}
+
+// consumedRefreshTokens remembers, per account, the refresh failure for which
+// this process cleared the stored token because its refresh_token had already
+// been used or revoked. A caller that swallows that first failure (such as a
+// best-effort scope pre-check) would otherwise leave later token lookups in
+// the same invocation with an unexplained need_user_authorization. Writing a
+// token for the account forgets the entry.
+var consumedRefreshTokens sync.Map
+
+func missingStoredTokenError(appID, userOpenID string) error {
+	if refreshErr, ok := consumedRefreshTokens.Load(accountKey(appID, userOpenID)); ok {
+		return newConsumedRefreshTokenAuthorizationError(userOpenID, refreshErr.(error))
+	}
+	return NewNeedUserAuthorizationError(userOpenID)
 }
 
 func accessTokenResultFromStored(ctx context.Context, stored *StoredUAToken, opts UATCallOptions) (*AccessTokenResult, error) {
@@ -355,6 +371,9 @@ func doRefreshToken(ctx context.Context, httpClient *http.Client, opts UATCallOp
 		fmt.Fprintf(errOut,
 			"[lark-cli] [WARN] uat-client: refresh failed for %s, token cleared: %v\n",
 			opts.UserOpenId, result.err)
+		if isConsumedRefreshTokenError(result.err) {
+			consumedRefreshTokens.Store(accountKey(opts.AppId, opts.UserOpenId), result.err)
+		}
 		// Preserve a precise, terminal refresh-token classification after
 		// deletion. Other failures surface the resulting missing-token state and
 		// retain the refresh failure as a cause.
@@ -561,6 +580,10 @@ func refreshOnce(ctx context.Context, httpClient *http.Client, endpoint string, 
 				WithUserOpenID(opts.UserOpenId)
 			if meta.Retryable {
 				authErr.WithRetryable()
+			}
+			if isConsumedRefreshTokenError(authErr) {
+				authErr.Message += "; " + consumedRefreshTokenReason(authErr)
+				return refreshResult{action: action, err: recovery.Attach(authErr, consumedRefreshTokenHint())}
 			}
 			return refreshResult{action: action, err: authErr}
 		}

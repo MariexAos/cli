@@ -56,18 +56,35 @@ func useAuthFSStub(t *testing.T, stub authFSStub) {
 	t.Cleanup(func() { vfs.DefaultFS = previous })
 }
 
-func TestTokenStorageLockUsesWorkspaceSanitizedPath(t *testing.T) {
+func TestTokenStorageLockPathFollowsTokenStorageAcrossWorkspaces(t *testing.T) {
 	setupStoredTokenTest(t)
 	previous := core.CurrentWorkspace()
-	core.SetCurrentWorkspace(core.WorkspaceOpenClaw)
 	t.Cleanup(func() { core.SetCurrentWorkspace(previous) })
 
-	got := tokenStorageLockPath("cli/test", "ou:test")
-	if filepath.Dir(got) != filepath.Join(core.GetConfigDir(), "locks") {
-		t.Fatalf("lock directory = %q, want workspace config lock directory", filepath.Dir(got))
+	paths := make(map[core.Workspace]string)
+	for _, workspace := range []core.Workspace{core.WorkspaceLocal, core.WorkspaceOpenClaw, core.WorkspaceHermes, core.WorkspaceLarkChannel} {
+		core.SetCurrentWorkspace(workspace)
+		got, err := tokenStorageLockPath("cli/test", "ou:test")
+		if err != nil {
+			t.Fatalf("tokenStorageLockPath() in %s workspace error = %v", workspace.Display(), err)
+		}
+		paths[workspace] = got
 	}
-	if filepath.Base(got) != "refresh_cli_test_ou_test.lock" {
-		t.Fatalf("lock filename = %q, want sanitized account identifiers", filepath.Base(got))
+	want := paths[core.WorkspaceLocal]
+	for workspace, got := range paths {
+		if got != want {
+			t.Fatalf("%s workspace lock = %q, local workspace lock = %q; want one lock per account", workspace.Display(), got, want)
+		}
+	}
+	root, err := tokenStorageRootDir()
+	if err != nil {
+		t.Fatalf("tokenStorageRootDir() error = %v", err)
+	}
+	if filepath.Dir(want) != filepath.Join(root, "locks") {
+		t.Fatalf("lock directory = %q, want token storage lock directory %q", filepath.Dir(want), filepath.Join(root, "locks"))
+	}
+	if filepath.Base(want) != "refresh_cli_test_ou_test.lock" {
+		t.Fatalf("lock filename = %q, want sanitized account identifiers", filepath.Base(want))
 	}
 }
 

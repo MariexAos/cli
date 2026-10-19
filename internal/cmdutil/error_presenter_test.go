@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/larksuite/cli/errs"
+	internalauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/errclass"
 	"github.com/larksuite/cli/internal/recovery"
@@ -101,5 +102,29 @@ func TestFactoryPresentErrorRebuildsUnannotatedCanonicalHintWithInvocationContex
 	}
 	if source.Hint != canonical {
 		t.Fatalf("PresentError mutated producer hint: got %q, want %q", source.Hint, canonical)
+	}
+}
+
+func TestFactoryPresentErrorScopesNeedAuthorizationRecoveryAfterReason(t *testing.T) {
+	const reason = "a refresh_token can be used only once; check whether credentials were copied"
+	generic := recovery.UserAuthorization().String()
+	source := errs.NewAuthenticationError(errs.SubtypeTokenMissing, "need_user_authorization (user: ou_x): reason").
+		WithCause(&internalauth.NeedAuthorizationError{UserOpenId: "ou_x"}).
+		WithHint("%s", reason+"\n"+generic)
+	f := &Factory{ResolvedIdentity: core.AsUser}
+
+	rendered := f.PresentError(source, ErrorPresentationOptions{
+		DeclaredScopes: func() []string { return []string{"spark:app:read"} },
+	})
+	presented, ok := rendered.(*errs.AuthenticationError)
+	if !ok {
+		t.Fatalf("PresentError() = %T, want *errs.AuthenticationError", rendered)
+	}
+	want := reason + "\n" + recovery.UserAuthorization("spark:app:read").String()
+	if presented.Hint != want {
+		t.Fatalf("presented hint = %q, want reason followed by scoped recovery %q", presented.Hint, want)
+	}
+	if presented.Subtype != errs.SubtypeTokenMissing {
+		t.Fatalf("presented subtype = %q, want %q", presented.Subtype, errs.SubtypeTokenMissing)
 	}
 }

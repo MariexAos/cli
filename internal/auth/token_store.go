@@ -186,6 +186,7 @@ func writeStoredToken(appID, userOpenID string, token *StoredUAToken) error {
 	if err := keychain.Set(keychain.LarkCliService, key, string(data)); err != nil {
 		return err
 	}
+	consumedRefreshTokens.Delete(key)
 	// The token now owns its new key. Best-effort cleanup of the superseded key
 	// happens only after the token write, so a cleanup failure cannot roll back
 	// into a token record whose new key was deleted by the caller.

@@ -4,6 +4,8 @@
 package cmdutil
 
 import (
+	"strings"
+
 	"github.com/larksuite/cli/errs"
 	internalauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/core"
@@ -118,8 +120,14 @@ func applyNeedAuthorizationHint(err error, projector *recovery.Projector, declar
 	}
 	scopedRecovery := projector.RenderHint(recovery.UserAuthorization(scopes...))
 	genericRecovery := projector.RenderHint(recovery.UserAuthorization())
-	if authErr.Hint == "" || authErr.Hint == genericRecovery {
+	if authErr.Hint == "" {
 		authErr.Hint = scopedRecovery
+		return
+	}
+	// Producers may lead the generic recovery with a reason; keep the reason
+	// and scope only the recovery itself.
+	if genericRecovery != "" && strings.HasSuffix(authErr.Hint, genericRecovery) {
+		authErr.Hint = strings.TrimSuffix(authErr.Hint, genericRecovery) + scopedRecovery
 		return
 	}
 	authErr.Hint += "\n" + scopedRecovery

@@ -202,9 +202,13 @@ func (f *Factory) CheckIdentity(as core.Identity, supported []string) error {
 		}
 		return base
 	}
-	return errs.NewValidationError(errs.SubtypeInvalidArgument,
+	base := errs.NewValidationError(errs.SubtypeInvalidArgument,
 		"--as %s is not supported, this command only supports: %s", as, list).
 		WithParam("--as")
+	if len(supported) > 0 {
+		return base.WithHint("use --as %s instead", supported[0])
+	}
+	return base
 }
 
 // ResolveStrictMode returns the effective strict mode by reading

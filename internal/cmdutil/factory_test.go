@@ -230,6 +230,16 @@ func TestCheckIdentity_Unsupported_Explicit(t *testing.T) {
 	if !strings.Contains(err.Error(), "bot") {
 		t.Errorf("error should mention supported identity: %v", err)
 	}
+	var ve *errs.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *errs.ValidationError, got %T: %v", err, err)
+	}
+	if ve.Subtype != errs.SubtypeInvalidArgument || ve.Param != "--as" {
+		t.Errorf("problem = (%q, param %q), want (%q, param --as)", ve.Subtype, ve.Param, errs.SubtypeInvalidArgument)
+	}
+	if ve.Hint != "use --as bot instead" {
+		t.Errorf("hint = %q, want explicit --as recovery", ve.Hint)
+	}
 }
 
 func TestCheckIdentity_Unsupported_AutoDetected(t *testing.T) {

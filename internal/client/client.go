@@ -22,6 +22,7 @@ import (
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/credential"
 	"github.com/larksuite/cli/internal/dpop"
+	"github.com/larksuite/cli/internal/envvars"
 	"github.com/larksuite/cli/internal/errclass"
 	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/internal/ratelimit"
@@ -86,6 +87,14 @@ func newTokenMissingError(as core.Identity, cause error) error {
 		"no access token available for %s", as).
 		WithCause(cause)
 	if as == core.AsUser {
+		// Environment credentials disable the whole `auth` command group, so
+		// the user token can only come from the environment as well.
+		var unavailable *credential.TokenUnavailableError
+		if errors.As(cause, &unavailable) && unavailable.Source == "env" {
+			return e.WithHint("credentials come from %s/%s in this environment, which disables `lark-cli auth`; "+
+				"set %s to a valid user access token, or ask whoever manages this environment to provide one",
+				envvars.CliAppID, envvars.CliAppSecret, envvars.CliUserAccessToken)
+		}
 		return recovery.Attach(e, recovery.UserAuthorization())
 	}
 	return e.WithHint("configure valid app credentials for the bot identity")

@@ -667,3 +667,117 @@ func TestExpiredRefreshTokenIsClearedWithoutRequest(t *testing.T) {
 		t.Fatalf("expired refresh made %d request(s) or left token stored", calls.Load())
 	}
 }
+
+func TestGetValidAccessTokenExplainsRefreshTokenConsumedElsewhere(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantSubtype errs.Subtype
+		wantReason  string
+	}{
+		{
+			name:        "used",
+			body:        `{"code":20073,"error_description":"The refresh token has been used. Please note that a refresh token can only be used once."}`,
+			wantSubtype: errs.SubtypeRefreshTokenReused,
+			wantReason:  "already used by another lark-cli process or environment",
+		},
+		{
+			name:        "revoked",
+			body:        `{"code":20064,"error_description":"The refresh token has been revoked. Please note that a refresh token can only be used once."}`,
+			wantSubtype: errs.SubtypeRefreshTokenRevoked,
+			wantReason:  "another lark-cli process or environment most likely used it first",
+		},
+	}
+	const copyGuidance = "copied or synced to another machine, container, or sandbox, or restored from a snapshot or image"
+	loginRecovery := recovery.UserAuthorization().String()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupStoredTokenTest(t)
+			stored := newRefreshTestToken()
+			stored.UserOpenId = "ou_consumed_" + tt.name
+			if err := SetStoredToken(stored); err != nil {
+				t.Fatalf("SetStoredToken() error = %v", err)
+			}
+			opts := newRefreshTestOptions(stored)
+			var calls atomic.Int32
+
+			// The refreshing call keeps its precise refresh-token subtype and
+			// explains who consumed the token.
+			_, refreshErr := GetValidAccessToken(context.Background(),
+				scriptedRefreshClient(t, []refreshHTTPTestStep{{body: tt.body}}, &calls), opts)
+			problem := requireRefreshProblem(t, refreshErr, errs.CategoryAuthentication, tt.wantSubtype, false)
+			if !strings.Contains(problem.Message, tt.wantReason) {
+				t.Fatalf("refresh message = %q, want reason %q", problem.Message, tt.wantReason)
+			}
+			if !strings.Contains(problem.Hint, copyGuidance) || !strings.HasSuffix(problem.Hint, loginRecovery) {
+				t.Fatalf("refresh hint = %q, want copy guidance followed by login recovery", problem.Hint)
+			}
+			if current := mustGetStoredToken(t, stored.AppId, stored.UserOpenId); current != nil {
+				t.Fatalf("stored token = %+v, want cleared after consumed refresh token", current)
+			}
+
+			// A later lookup in the same process, e.g. after a caller swallowed
+			// the first failure, keeps the need_user_authorization contract and
+			// still carries the reason.
+			_, missingErr := GetValidAccessToken(context.Background(),
+				scriptedRefreshClient(t, nil, &calls), opts)
+			problem = requireRefreshProblem(t, missingErr, errs.CategoryAuthentication, errs.SubtypeTokenMissing, false)
+			if !IsNeedUserAuthorizationError(missingErr) {
+				t.Fatalf("error = %v, want need-user-authorization sentinel", missingErr)
+			}
+			wantPrefix := "need_user_authorization (user: " + stored.UserOpenId + "): "
+			if !strings.HasPrefix(problem.Message, wantPrefix) || !strings.Contains(problem.Message, tt.wantReason) {
+				t.Fatalf("message = %q, want need_user_authorization marker followed by reason %q", problem.Message, tt.wantReason)
+			}
+			if !strings.Contains(problem.Hint, copyGuidance) || !strings.HasSuffix(problem.Hint, loginRecovery) {
+				t.Fatalf("hint = %q, want copy guidance followed by login recovery", problem.Hint)
+			}
+			if !errors.Is(missingErr, refreshErr) {
+				t.Fatalf("error = %v, want refresh failure preserved as cause", missingErr)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("refresh requests = %d, want 1", calls.Load())
+			}
+
+			// Storing a token again forgets the reason for this account.
+			if err := SetStoredToken(stored); err != nil {
+				t.Fatalf("SetStoredToken() error = %v", err)
+			}
+			if err := RemoveStoredToken(stored.AppId, stored.UserOpenId); err != nil {
+				t.Fatalf("RemoveStoredToken() error = %v", err)
+			}
+			_, plainErr := GetValidAccessToken(context.Background(),
+				scriptedRefreshClient(t, nil, &calls), opts)
+			problem = requireRefreshProblem(t, plainErr, errs.CategoryAuthentication, errs.SubtypeTokenMissing, false)
+			if problem.Message != "need_user_authorization (user: "+stored.UserOpenId+")" {
+				t.Fatalf("message after re-store = %q, want plain need_user_authorization", problem.Message)
+			}
+		})
+	}
+}
+
+func TestRenderConsumedRefreshTokenHintWithoutAuthLogin(t *testing.T) {
+	setupStoredTokenTest(t)
+	stored := newRefreshTestToken()
+	stored.UserOpenId = "ou_consumed_render"
+	consumedRefreshTokens.Store(accountKey(stored.AppId, stored.UserOpenId),
+		errs.NewAuthenticationError(errs.SubtypeRefreshTokenReused, "used"))
+	t.Cleanup(func() { consumedRefreshTokens.Delete(accountKey(stored.AppId, stored.UserOpenId)) })
+
+	_, err := GetValidAccessToken(context.Background(), &http.Client{}, newRefreshTestOptions(stored))
+	rendered := recovery.Render(err, surface.NewPlan(map[surface.CommandID]surface.CommandState{
+		surface.CommandAuthLogin: surface.CommandConcealed,
+	}))
+	problem, ok := errs.ProblemOf(rendered)
+	if !ok {
+		t.Fatalf("rendered = %v, want typed error", rendered)
+	}
+	if strings.Contains(problem.Hint, "lark-cli auth login") {
+		t.Fatalf("hint = %q, want no auth login when it is not referenceable", problem.Hint)
+	}
+	if !strings.Contains(problem.Hint, "restored from a snapshot or image") ||
+		!strings.Contains(problem.Hint, "supported authorization flow") {
+		t.Fatalf("hint = %q, want copy guidance and authorization fallback", problem.Hint)
+	}
+}
