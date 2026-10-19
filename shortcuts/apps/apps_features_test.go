@@ -1003,8 +1003,8 @@ func TestAppsFeatureEnable_GatewayWithoutFeatureRoutesIsFinal(t *testing.T) {
 
 		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
 		p := requireFeatureAPIMissing(t, err)
-		if !strings.Contains(p.Message, "HTTP 404") {
-			t.Fatalf("message = %q, want the 404 named", p.Message)
+		if !strings.Contains(p.Message, "no API answer") {
+			t.Fatalf("message = %q, want the non-API answer named", p.Message)
 		}
 		if len(post.CapturedBodies) != 1 || len(get.CapturedBodies) != 1 {
 			t.Fatalf("POST/GET = %d/%d, want one enable and one read-only re-check", len(post.CapturedBodies), len(get.CapturedBodies))
@@ -1057,17 +1057,27 @@ func TestAppsFeatureEnable_MissingEnableRouteIsFinal(t *testing.T) {
 }
 
 func TestAppsFeatures_GatewayWithoutFeatureRoutesIsFinal(t *testing.T) {
-	factory, stdout, reg := newAppsExecuteFactory(t)
-	get := routeMissingStub("GET", "/open-apis/spark/v1/apps/app_x/features")
-	reg.Register(get)
+	for name, body := range map[string]string{
+		// "404 page not found" decodes as the JSON number 404 followed by text.
+		"plain-text 404 page": "404 page not found",
+		// A body that does not decode at all is classified by its status.
+		"html 404 page": "<html><body>Not Found</body></html>",
+	} {
+		t.Run(name, func(t *testing.T) {
+			factory, stdout, reg := newAppsExecuteFactory(t)
+			get := &httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Status: 404, Reusable: true,
+				RawBody: []byte(body), ContentType: "text/plain; charset=utf-8"}
+			reg.Register(get)
 
-	err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--as", "user"}, factory, stdout)
-	p := requireFeatureAPIMissing(t, err)
-	if strings.Contains(p.Hint, "+list") {
-		t.Fatalf("hint must not point at the app list for a missing route: %q", p.Hint)
-	}
-	if len(get.CapturedBodies) != 2 {
-		t.Fatalf("GET = %d, want the read and one re-check", len(get.CapturedBodies))
+			err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+			p := requireFeatureAPIMissing(t, err)
+			if strings.Contains(p.Hint, "+list") {
+				t.Fatalf("hint must not point at the app list for a missing route: %q", p.Hint)
+			}
+			if len(get.CapturedBodies) != 2 {
+				t.Fatalf("GET = %d, want the read and one re-check", len(get.CapturedBodies))
+			}
+		})
 	}
 }
 

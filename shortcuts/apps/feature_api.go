@@ -363,10 +363,11 @@ func setFeatureRecoveryHint(err error, appID, key string) error {
 	if explainFeatureRejection(p, appID, key) {
 		return err
 	}
-	if isFeatureRouteMissing(p) {
+	if isFeatureNonAPIAnswer(p) {
 		// The gateway serves the features read but has no route for the
 		// enable: no key can reach the API, so a same-key resume would only
 		// repeat the 404.
+		p, err = asFeatureServerAnswer(err)
 		p.Subtype = errs.SubtypeFeatureNotAvailable
 		p.Retryable = false
 		p.Hint = "do not retry: the gateway has no route for enabling app features yet. Ask for the server to be upgraded, or enable the database for this app in Miaoda cloud development; report the log_id if app features should already be available"
@@ -483,22 +484,47 @@ func withFeatureAuthRecovery(err error) error {
 	return recovery.Attach(err, recovery.UserAuthorization())
 }
 
-// isFeatureAPIAbsentAnswer reports whether err is one of the two answers a
+// isFeatureAPIAbsentAnswer reports whether err is one of the answers a
 // deployment without the app features API gives: the gateway's internal error
-// (2200) when the route exists but nothing behind it serves the API, or a bare
-// HTTP 404 with no API envelope when the gateway has no route for it at all.
-// Spark answers its own failures, a missing app included, inside an envelope,
-// so a bare 404 comes from the gateway, not from the API.
+// (2200) when the route exists but nothing behind it serves the API, or a body
+// that is no API answer at all when the gateway has no route for it.
 func isFeatureAPIAbsentAnswer(err error) bool {
 	p, ok := errs.ProblemOf(err)
 	if !ok {
 		return false
 	}
-	return p.Code == featureCodeGatewayInternal || isFeatureRouteMissing(p)
+	return p.Code == featureCodeGatewayInternal || isFeatureNonAPIAnswer(p)
 }
 
-func isFeatureRouteMissing(p *errs.Problem) bool {
-	return p.Category == errs.CategoryAPI && p.Subtype == errs.SubtypeNotFound && p.Code == http.StatusNotFound
+// asFeatureServerAnswer returns err, and its problem, as an API error when the
+// classifier typed a response that is no API answer as an internal
+// invalid-response error: what the server or its gateway answered is not a CLI
+// fault, and the exit code follows the error category. The problem is nil
+// when err is not typed.
+func asFeatureServerAnswer(err error) (*errs.Problem, error) {
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		return nil, err
+	}
+	if p.Category != errs.CategoryInternal {
+		return p, err
+	}
+	apiErr := errs.NewAPIError(p.Subtype, "%s", p.Message).WithCause(err)
+	if p.LogID != "" {
+		apiErr = apiErr.WithLogID(p.LogID)
+	}
+	return &apiErr.Problem, apiErr
+}
+
+// isFeatureNonAPIAnswer reports a response that did not come from the API.
+// Spark answers its own failures, a missing app included, inside a JSON
+// envelope. A gateway without the route answers HTTP 404 with the plain text
+// "404 page not found", whose leading 404 decodes as a JSON number, so the
+// classifier reports a non-object JSON response; a 404 body that does not
+// decode at all is classified by its status as not_found.
+func isFeatureNonAPIAnswer(p *errs.Problem) bool {
+	return (p.Category == errs.CategoryAPI && p.Subtype == errs.SubtypeNotFound && p.Code == http.StatusNotFound) ||
+		(p.Category == errs.CategoryInternal && p.Subtype == errs.SubtypeInvalidResponse)
 }
 
 // confirmFeatureAPIMissing re-checks an answer isFeatureAPIAbsentAnswer
@@ -516,13 +542,13 @@ func confirmFeatureAPIMissing(rctx *common.RuntimeContext, appID string, err err
 // explainFeatureAPIMissing reports a confirmed missing app features API as
 // final: retrying the same command cannot succeed until the server changes.
 func explainFeatureAPIMissing(err error, appID string) error {
-	p, ok := errs.ProblemOf(err)
-	if !ok {
+	p, err := asFeatureServerAnswer(err)
+	if p == nil {
 		return err
 	}
 	answer := "failed with the gateway's internal error (2200)"
-	if isFeatureRouteMissing(p) {
-		answer = "got HTTP 404 with no API response, meaning the gateway has no route for it"
+	if p.Code != featureCodeGatewayInternal {
+		answer = "got a response that is no API answer, such as the gateway's plain-text 404 for a route it does not have,"
 	}
 	p.Subtype = errs.SubtypeFeatureNotAvailable
 	p.Retryable = false
