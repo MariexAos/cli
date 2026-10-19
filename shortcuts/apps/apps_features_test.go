@@ -982,6 +982,95 @@ func TestAppsFeatures_PassingGatewayFailureIsReadAgain(t *testing.T) {
 	reg.Verify(t)
 }
 
+// routeMissingStub answers like an OpenAPI gateway with no route for the
+// request: a bare HTTP 404 without an API envelope.
+func routeMissingStub(method, url string) *httpmock.Stub {
+	return &httpmock.Stub{Method: method, URL: url, Status: 404, Reusable: true,
+		RawBody: []byte("404 page not found"), ContentType: "text/plain; charset=utf-8"}
+}
+
+// A gateway that has not registered the app features routes answers a bare
+// 404 to every call. Confirmed by a read-only re-check, that is as final as
+// the gateway's internal error from a server without the API.
+func TestAppsFeatureEnable_GatewayWithoutFeatureRoutesIsFinal(t *testing.T) {
+	t.Run("new request", func(t *testing.T) {
+		fastFeatureTiming(t)
+		factory, stdout, reg := newAppsExecuteFactory(t)
+		post := routeMissingStub("POST", "/features/database/enable")
+		reg.Register(post)
+		get := routeMissingStub("GET", "/open-apis/spark/v1/apps/app_x/features")
+		reg.Register(get)
+
+		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+		p := requireFeatureAPIMissing(t, err)
+		if !strings.Contains(p.Message, "HTTP 404") {
+			t.Fatalf("message = %q, want the 404 named", p.Message)
+		}
+		if len(post.CapturedBodies) != 1 || len(get.CapturedBodies) != 1 {
+			t.Fatalf("POST/GET = %d/%d, want one enable and one read-only re-check", len(post.CapturedBodies), len(get.CapturedBodies))
+		}
+	})
+	t.Run("resume", func(t *testing.T) {
+		fastFeatureTiming(t)
+		factory, stdout, reg := newAppsExecuteFactory(t)
+		get := routeMissingStub("GET", "/open-apis/spark/v1/apps/app_x/features")
+		reg.Register(get)
+		forbidEnablePOST(t, reg, "a gateway without the routes must not get the write")
+
+		err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+		requireFeatureAPIMissing(t, err)
+		if len(get.CapturedBodies) != 2 {
+			t.Fatalf("GET = %d, want the kept-operation read and one re-check", len(get.CapturedBodies))
+		}
+	})
+}
+
+// A gateway that routes the features read but not the enable answers the
+// enable with a bare 404 while the re-check succeeds. No key can reach the
+// API either, so the enable is final instead of offering a same-key resume.
+func TestAppsFeatureEnable_MissingEnableRouteIsFinal(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	post := routeMissingStub("POST", "/features/database/enable")
+	reg.Register(post)
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(featureStatusWire(false), nil)})
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	p := requireExit(t, err, output.ExitAPI)
+	if p.Subtype != errs.SubtypeFeatureNotAvailable || p.Retryable {
+		t.Fatalf("subtype/retryable = %q/%t, want %q/false", p.Subtype, p.Retryable, errs.SubtypeFeatureNotAvailable)
+	}
+	for _, want := range []string{"do not retry", "Miaoda cloud development"} {
+		if !strings.Contains(p.Hint, want) {
+			t.Fatalf("hint missing %q: %q", want, p.Hint)
+		}
+	}
+	for _, forbid := range []string{"--operation-ref", "--idempotent-key "} {
+		if strings.Contains(p.Hint, forbid) {
+			t.Fatalf("hint must not send the caller back to %q: %q", forbid, p.Hint)
+		}
+	}
+	if len(post.CapturedBodies) != 1 {
+		t.Fatalf("POST = %d, want a single enable", len(post.CapturedBodies))
+	}
+	reg.Verify(t)
+}
+
+func TestAppsFeatures_GatewayWithoutFeatureRoutesIsFinal(t *testing.T) {
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	get := routeMissingStub("GET", "/open-apis/spark/v1/apps/app_x/features")
+	reg.Register(get)
+
+	err := runAppsShortcut(t, AppsFeatures, []string{"+features", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	p := requireFeatureAPIMissing(t, err)
+	if strings.Contains(p.Hint, "+list") {
+		t.Fatalf("hint must not point at the app list for a missing route: %q", p.Hint)
+	}
+	if len(get.CapturedBodies) != 2 {
+		t.Fatalf("GET = %d, want the read and one re-check", len(get.CapturedBodies))
+	}
+}
+
 // requireFeatureReauthorization checks that an authentication failure keeps
 // the CLI's own re-authorization guidance and never sends the caller round
 // the same key: no key can succeed until the user authorizes again.

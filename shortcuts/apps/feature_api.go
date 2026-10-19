@@ -64,6 +64,8 @@ const (
 // that does not implement the app features API answers every call this way,
 // and so can a passing upstream failure; the response carries nothing that
 // tells them apart, so only a read-only re-check failing the same way does.
+// A gateway that has no route for the API at all answers a bare HTTP 404
+// instead; see isFeatureAPIAbsentAnswer.
 const featureCodeGatewayInternal = 2200
 
 // featureGatewayCodeBase is what the OpenAPI gateway adds to a Studio code:
@@ -361,6 +363,15 @@ func setFeatureRecoveryHint(err error, appID, key string) error {
 	if explainFeatureRejection(p, appID, key) {
 		return err
 	}
+	if isFeatureRouteMissing(p) {
+		// The gateway serves the features read but has no route for the
+		// enable: no key can reach the API, so a same-key resume would only
+		// repeat the 404.
+		p.Subtype = errs.SubtypeFeatureNotAvailable
+		p.Retryable = false
+		p.Hint = "do not retry: the gateway has no route for enabling app features yet. Ask for the server to be upgraded, or enable the database for this app in Miaoda cloud development; report the log_id if app features should already be available"
+		return err
+	}
 	query := featureQueryCommand(appID, key)
 	switch {
 	case featureStudioCode(p.Code) == featureCodeResultUnknown:
@@ -472,21 +483,34 @@ func withFeatureAuthRecovery(err error) error {
 	return recovery.Attach(err, recovery.UserAuthorization())
 }
 
-func isFeatureGatewayInternal(err error) bool {
+// isFeatureAPIAbsentAnswer reports whether err is one of the two answers a
+// deployment without the app features API gives: the gateway's internal error
+// (2200) when the route exists but nothing behind it serves the API, or a bare
+// HTTP 404 with no API envelope when the gateway has no route for it at all.
+// Spark answers its own failures, a missing app included, inside an envelope,
+// so a bare 404 comes from the gateway, not from the API.
+func isFeatureAPIAbsentAnswer(err error) bool {
 	p, ok := errs.ProblemOf(err)
-	return ok && p.Code == featureCodeGatewayInternal
+	if !ok {
+		return false
+	}
+	return p.Code == featureCodeGatewayInternal || isFeatureRouteMissing(p)
 }
 
-// confirmFeatureAPIMissing re-checks a gateway internal error with one plain
-// read of the features endpoint and reports whether that read failed the same
-// way. Any other answer, including a success, means the API is served and the
-// first failure stays as it was reported.
+func isFeatureRouteMissing(p *errs.Problem) bool {
+	return p.Category == errs.CategoryAPI && p.Subtype == errs.SubtypeNotFound && p.Code == http.StatusNotFound
+}
+
+// confirmFeatureAPIMissing re-checks an answer isFeatureAPIAbsentAnswer
+// recognizes with one plain read of the features endpoint and reports whether
+// that read was answered the same way. Any other answer, including a success,
+// means the API is served and the first failure stays as it was reported.
 func confirmFeatureAPIMissing(rctx *common.RuntimeContext, appID string, err error) bool {
-	if !isFeatureGatewayInternal(err) {
+	if !isFeatureAPIAbsentAnswer(err) {
 		return false
 	}
 	_, probeErr := rctx.CallAPITyped("GET", appFeaturesPath(appID), nil, nil)
-	return isFeatureGatewayInternal(probeErr)
+	return isFeatureAPIAbsentAnswer(probeErr)
 }
 
 // explainFeatureAPIMissing reports a confirmed missing app features API as
@@ -496,9 +520,13 @@ func explainFeatureAPIMissing(err error, appID string) error {
 	if !ok {
 		return err
 	}
+	answer := "failed with the gateway's internal error (2200)"
+	if isFeatureRouteMissing(p) {
+		answer = "got HTTP 404 with no API response, meaning the gateway has no route for it"
+	}
 	p.Subtype = errs.SubtypeFeatureNotAvailable
 	p.Retryable = false
-	p.Message = fmt.Sprintf("the server did not run the app features API for app %s: the call failed with the gateway's internal error (2200) and a read-only re-check failed the same way, which is how a server without app features answers (server: %s)", appID, p.Message)
+	p.Message = fmt.Sprintf("the server did not run the app features API for app %s: the call %s and a read-only re-check was answered the same way, which is how a server without app features answers (server: %s)", appID, answer, p.Message)
 	p.Hint = "do not retry: this server does not offer app features yet. Ask for the server to be upgraded, or enable the database for this app in Miaoda cloud development; report the log_id if app features should already be available"
 	return err
 }
