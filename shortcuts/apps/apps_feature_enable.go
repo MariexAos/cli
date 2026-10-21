@@ -107,13 +107,13 @@ func runFeatureEnable(rctx *common.RuntimeContext, appID, feature, key string, r
 		}
 		// A retryable failure may continue: it is re-sent below with the same
 		// key so the server resumes its known resource steps.
-		if kept != nil && !(kept.Operation.State == "failed" && kept.Operation.Retryable != nil && *kept.Operation.Retryable) {
+		if kept != nil && !isResumableFeatureFailure(kept.Operation) {
 			return followKeptFeatureOperation(rctx, kept, appID, feature, key)
 		}
 	}
 
 	body := map[string]any{"idempotent_key": key}
-	data, err := callWithIdempotentReplay(rctx.Ctx(), rctx, "POST", appFeatureEnablePath(appID, feature), nil, body)
+	data, attempts, err := callWithIdempotentReplayAttempts(rctx.Ctx(), rctx, "POST", appFeatureEnablePath(appID, feature), nil, body)
 	if err != nil {
 		if confirmFeatureAPIMissing(rctx, appID, err) {
 			return explainFeatureAPIMissing(err, appID)
@@ -132,6 +132,23 @@ func runFeatureEnable(rctx *common.RuntimeContext, appID, feature, key string, r
 		}
 		if unverified {
 			return withUnverifiedAnswerHint(err, appID, key)
+		}
+		// A rate limit says only that this request did nothing. After a
+		// network replay, or on a resume, the key may already name an
+		// operation, so it is read before any advice to drop it: an operation
+		// the resume rule would not re-send is reported as it is, one that is
+		// still worth resuming keeps the key, and only the server's own "not
+		// kept" answer leads to a new attempt.
+		if featureStudioCode(problemCode(err)) == featureCodeRateLimited && (resume || attempts > 1) {
+			kept, readErr := readKeptFeatureOperation(rctx.Ctx(), rctx, appID, feature, key)
+			switch {
+			case readErr == nil && kept != nil && !isResumableFeatureFailure(kept.Operation):
+				return followKeptFeatureOperation(rctx, kept, appID, feature, key)
+			case readErr != nil && isFeatureKeyNotKept(readErr):
+				// Nothing is kept under the key: the first-request answer holds.
+			default:
+				return explainRateLimitedKeptKey(err, appID, key)
+			}
 		}
 		return setFeatureRecoveryHint(err, appID, key)
 	}
@@ -163,6 +180,12 @@ func followKeptFeatureOperation(rctx *common.RuntimeContext, kept *appFeatureEna
 		return err
 	}
 	return finishFeatureEnable(rctx, result, key)
+}
+
+// isResumableFeatureFailure reports an operation the server failed but allows
+// to continue: re-sending the same key resumes its known resource steps.
+func isResumableFeatureFailure(op *appFeatureOperation) bool {
+	return op != nil && op.State == "failed" && op.Retryable != nil && *op.Retryable
 }
 
 func problemCode(err error) int {

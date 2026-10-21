@@ -315,14 +315,22 @@ func validateIdempotentKeyFlag(rctx *common.RuntimeContext) error {
 // answer (including a conflict) is returned as is. ctx bounds every attempt and
 // every backoff, so a caller's deadline also covers slow requests and replays.
 func callWithIdempotentReplay(ctx context.Context, rctx *common.RuntimeContext, method, url string, params map[string]any, body any) (map[string]any, error) {
+	data, _, err := callWithIdempotentReplayAttempts(ctx, rctx, method, url, params, body)
+	return data, err
+}
+
+// callWithIdempotentReplayAttempts is callWithIdempotentReplay that also
+// reports how many requests it sent. More than one means an earlier attempt
+// failed on the network after it may already have reached the server.
+func callWithIdempotentReplayAttempts(ctx context.Context, rctx *common.RuntimeContext, method, url string, params map[string]any, body any) (map[string]any, int, error) {
 	for attempt := 0; ; attempt++ {
 		data, err := callFeatureAPI(ctx, rctx, method, url, params, body)
 		if err == nil || !errs.IsNetwork(err) || attempt >= len(featureRetryBackoff) || ctx.Err() != nil {
-			return data, err
+			return data, attempt + 1, err
 		}
 		select {
 		case <-ctx.Done():
-			return data, err
+			return data, attempt + 1, err
 		case <-time.After(featureRetryBackoff[attempt]):
 		}
 	}
@@ -482,10 +490,13 @@ func explainFeatureRejection(p *errs.Problem, appID, key string) bool {
 			p.Hint = featureConflictHint(appID, key)
 		}
 	case featureCodeRateLimited:
-		// The limit is checked before anything else, so the server keeps no
-		// operation for this request and the key has nothing to resume: a
-		// resume would read the key, find no operation and stop. A new attempt
-		// is the recovery, as for any key the server does not keep.
+		// The limit is checked before anything else, so the limited request
+		// did nothing. This answer is only reached when nothing else can be
+		// kept under the key either — a first request, or a key the server
+		// confirmed it does not keep (runFeatureEnable reads the key after a
+		// replay or on a resume, see explainRateLimitedKeptKey) — so a resume
+		// would find no operation and stop. A new attempt is the recovery, as
+		// for any key the server does not keep.
 		p.Subtype = errs.SubtypeRateLimit
 		p.Retryable = true
 		p.Hint = fmt.Sprintf("the enable API is rate limited and did not act on this request, so idempotent_key=%s has nothing to resume; wait about a minute, then run `lark-cli apps +feature-enable --feature %s --app-id %s` again without --idempotent-key", key, featurePG, appID)
@@ -493,6 +504,38 @@ func explainFeatureRejection(p *errs.Problem, appID, key string) bool {
 		p.Hint = "the server rejected the enable request; the message says why, so fix that before trying again"
 	}
 	return true
+}
+
+// explainRateLimitedKeptKey answers a rate limit on a request whose key may
+// already name an operation on the server: a network replay, whose earlier
+// attempt may have reached the server, or a resume. The limited request did
+// nothing, but the key is still the way to that operation, so the hint keeps
+// it instead of asking for a new one.
+func explainRateLimitedKeptKey(err error, appID, key string) error {
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		return err
+	}
+	p.Subtype = errs.SubtypeRateLimit
+	p.Retryable = true
+	p.Hint = fmt.Sprintf("the enable API is rate limited and did not act on this request, but idempotent_key=%s may already name an operation on the server; wait about a minute, check it with `%s`, then resume the same request with `%s`; do not start a new request with another key while that operation may exist", key, featureQueryCommand(appID, key), featureEnableRetryCommand(appID, key))
+	return err
+}
+
+// isFeatureKeyNotKept reports the server's answer that key names no operation
+// this caller can follow: 40915, or a 40913 led by operation_unavailable.
+func isFeatureKeyNotKept(err error) bool {
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		return false
+	}
+	switch featureStudioCode(p.Code) {
+	case featureCodeOperationUnavailable:
+		return true
+	case featureCodeKeyConflict:
+		return strings.Contains(p.Message, featureReasonOperationUnavailable)
+	}
+	return false
 }
 
 // featureAuthFailure reports whether err is an authentication failure and, if

@@ -1630,3 +1630,106 @@ func TestAppsFeatureEnable_RateLimitHintLeadsToACompletedEnable(t *testing.T) {
 	}
 	reg.Verify(t)
 }
+
+func rateLimitedEnableStub() *httpmock.Stub {
+	return &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Status: 400,
+		Body: map[string]any{"code": featureGatewayCodeBase + featureCodeRateLimited, "msg": "rate limit exceeded"}}
+}
+
+// A network replay that is rate limited may follow an attempt that reached
+// the server: the key is read, and the operation it names is reported with
+// the key kept instead of being traded for a new one.
+func TestAppsFeatureEnable_RateLimitedReplayFollowsTheKeptOperation(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	lost := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Error: errors.New("connection reset by peer")}
+	reg.Register(lost)
+	limited := rateLimitedEnableStub()
+	reg.Register(limited)
+	get := &httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features"}
+	get.OnMatch = func(req *http.Request) {
+		get.Body = featuresResponse(featureStatusWire(false), map[string]any{
+			"ref": req.URL.Query().Get("operation_ref"), "state": "unknown", "error_reason": "resource request outcome unknown"})
+	}
+	reg.Register(get)
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	p := requireExit(t, err, output.ExitAPI)
+	key := sentKey(t, lost.CapturedBody)
+	if got := sentKey(t, limited.CapturedBody); got != key {
+		t.Fatalf("replay carried %q, want the first attempt's key %q", got, key)
+	}
+	if !strings.Contains(p.Hint, "--operation-ref "+key) {
+		t.Fatalf("hint must keep the key's query: %q", p.Hint)
+	}
+	for _, forbid := range []string{"without --idempotent-key", "nothing to resume"} {
+		if strings.Contains(p.Hint, forbid) {
+			t.Fatalf("hint must not drop a key that names an operation (%q): %q", forbid, p.Hint)
+		}
+	}
+	if len(get.CapturedBodies) != 1 {
+		t.Fatalf("GET = %d, want one read of the key", len(get.CapturedBodies))
+	}
+	reg.Verify(t)
+}
+
+// Resuming a retryable failure whose re-send is rate limited keeps the key:
+// the operation still exists and the same key is still the way to resume it.
+func TestAppsFeatureEnable_RateLimitedResumeKeepsTheKey(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	get := &httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Reusable: true,
+		Body: featuresResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "failed", "retryable": true})}
+	reg.Register(get)
+	post := rateLimitedEnableStub()
+	reg.Register(post)
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+	p := requireExit(t, err, output.ExitAPI)
+	if p.Subtype != errs.SubtypeRateLimit || !p.Retryable {
+		t.Fatalf("subtype/retryable = %q/%t, want %q/true", p.Subtype, p.Retryable, errs.SubtypeRateLimit)
+	}
+	for _, want := range []string{"--operation-ref " + testKey, "--idempotent-key " + testKey} {
+		if !strings.Contains(p.Hint, want) {
+			t.Fatalf("hint missing %q: %q", want, p.Hint)
+		}
+	}
+	for _, forbid := range []string{"without --idempotent-key", "nothing to resume"} {
+		if strings.Contains(p.Hint, forbid) {
+			t.Fatalf("hint must not drop a key that names an operation (%q): %q", forbid, p.Hint)
+		}
+	}
+	if len(post.CapturedBodies) != 1 || len(get.CapturedBodies) != 2 {
+		t.Fatalf("POST/GET = %d/%d, want one resume and two reads of the key", len(post.CapturedBodies), len(get.CapturedBodies))
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("no success output expected: %s", stdout.String())
+	}
+	reg.Verify(t)
+}
+
+// When the server confirms the replayed key names no operation, nothing can
+// be resumed and the first-request answer holds: start a new attempt.
+func TestAppsFeatureEnable_RateLimitedReplayOfAKeyNotKeptAsksForANewAttempt(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	lost := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Error: errors.New("connection reset by peer")}
+	reg.Register(lost)
+	reg.Register(rateLimitedEnableStub())
+	get := &httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Status: 409,
+		Body: map[string]any{"code": featureGatewayCodeBase + featureCodeOperationUnavailable, "msg": "operation_unavailable"}}
+	reg.Register(get)
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	p := requireExit(t, err, output.ExitAPI)
+	if p.Subtype != errs.SubtypeRateLimit {
+		t.Fatalf("subtype = %q, want %q", p.Subtype, errs.SubtypeRateLimit)
+	}
+	if !strings.Contains(p.Hint, "without --idempotent-key") {
+		t.Fatalf("hint must ask for a new attempt once the key is confirmed not kept: %q", p.Hint)
+	}
+	if key := sentKey(t, lost.CapturedBody); strings.Contains(p.Hint, "--idempotent-key "+key) {
+		t.Fatalf("hint must not resume a key the server does not keep: %q", p.Hint)
+	}
+	reg.Verify(t)
+}
