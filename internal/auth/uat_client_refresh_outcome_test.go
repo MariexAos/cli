@@ -26,6 +26,7 @@ type tokenEndpointServer struct {
 	refreshTokens []string
 }
 
+// record stores the refresh_token carried by one Token Endpoint request.
 func (s *tokenEndpointServer) record(t *testing.T, r *http.Request) {
 	t.Helper()
 	var payload refreshRequest
@@ -37,6 +38,7 @@ func (s *tokenEndpointServer) record(t *testing.T, r *http.Request) {
 	s.mu.Unlock()
 }
 
+// requests returns the refresh_token of each request received so far, in order.
 func (s *tokenEndpointServer) requests() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -58,6 +60,8 @@ func clientFor(srv *httptest.Server, timeout time.Duration) *http.Client {
 	}
 }
 
+// requireOutcomeUnknownPreserved asserts a retryable outcome-unknown network
+// error with recovery guidance, and that the stored token is still the original.
 func requireOutcomeUnknownPreserved(t *testing.T, err error, stored *StoredUAToken, subtype errs.Subtype) {
 	t.Helper()
 	problem := requireRefreshProblem(t, err, errs.CategoryNetwork, subtype, true)
@@ -76,6 +80,7 @@ func requireOutcomeUnknownPreserved(t *testing.T, err error, stored *StoredUATok
 	}
 }
 
+// A client timeout after the request was written must not replay the token.
 func TestRefreshClientTimeoutAfterWriteDoesNotReplayRefreshToken(t *testing.T) {
 	setupStoredTokenTest(t)
 	stored := newRefreshTestToken()
@@ -104,6 +109,8 @@ func TestRefreshClientTimeoutAfterWriteDoesNotReplayRefreshToken(t *testing.T) {
 	}
 }
 
+// Reproduces #2830: EOF after the write keeps the token without a replay, and
+// only the next invocation's definitive 20064 answer clears it.
 func TestRefreshEOFAfterWriteKeepsTokenUntilServerAnswers(t *testing.T) {
 	setupStoredTokenTest(t)
 	stored := newRefreshTestToken()
@@ -145,6 +152,7 @@ func TestRefreshEOFAfterWriteKeepsTokenUntilServerAnswers(t *testing.T) {
 	}
 }
 
+// The refresh deadline firing after the write stops without clearing the token.
 func TestRefreshDeadlineAfterWriteStopsAndPreserves(t *testing.T) {
 	setupStoredTokenTest(t)
 	stored := newRefreshTestToken()
@@ -176,6 +184,7 @@ func TestRefreshDeadlineAfterWriteStopsAndPreserves(t *testing.T) {
 	}
 }
 
+// A dial failure never reached the server, so the ordinary retry still applies.
 func TestRefreshDialErrorBeforeWriteStillRetries(t *testing.T) {
 	setupStoredTokenTest(t)
 	stored := newRefreshTestToken()

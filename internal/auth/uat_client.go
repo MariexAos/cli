@@ -385,6 +385,10 @@ func synchronizeStoredTokenClock(ctx context.Context, httpClient *http.Client, o
 	return nil
 }
 
+// refreshOnce sends one refresh request and classifies its result into a
+// refreshAction. A failure after the request was written is an unknown outcome
+// and is never retried, because the Token Endpoint may already have rotated the
+// single-use refresh token.
 func refreshOnce(ctx context.Context, httpClient *http.Client, endpoint string, opts UATCallOptions, stored *StoredUAToken, proofKey *dpop.Key, allowClockRecovery bool) refreshResult {
 	payload, err := json.Marshal(refreshRequest{
 		GrantType:    "refresh_token",
@@ -629,6 +633,9 @@ func refreshOutcomeUnknown(err error) refreshResult {
 	return refreshResult{action: refreshStopAndPreserve, err: recovery.Attach(err, refreshOutcomeUnknownHint)}
 }
 
+// refreshTransportSubtype reports network/timeout when the refresh deadline,
+// the client timeout, or a network timeout ended the attempt, and
+// network/transport otherwise.
 func refreshTransportSubtype(ctx context.Context, err error) errs.Subtype {
 	var netErr net.Error
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) ||
