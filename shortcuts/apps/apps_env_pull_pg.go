@@ -32,8 +32,8 @@ var envPullManagedKeys = []string{envKeyDisableDatapass, envKeyTempDatabaseURL, 
 
 // envPullDBExport is what the pulled environment says about the local
 // database integration. It only describes the exported keys: it neither tells
-// whether the app's database feature is enabled (legacy USER/TCC variables can carry
-// the same names) nor proves the database is reachable.
+// whether the app's database feature is enabled (an older app's custom variables can
+// carry the same names) nor proves the database is reachable.
 type envPullDBExport string
 
 const (

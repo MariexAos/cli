@@ -39,7 +39,7 @@ lark-cli apps +features --app-id <app_id> --operation-ref b3d93913-e777-4968-a00
 | exit 1，`subtype=failed_precondition`，提示应用不是新契约应用 | 该应用不能通过 CLI 开数据库 | 按 [`lark-apps-cloud-dev.md`](lark-apps-cloud-dev.md) 经妙搭云端会话添加；重试本命令没有用 |
 | exit 1，`subtype=failed_precondition`，提示 `idempotent_key` 已不可用 | 该 key 已作废：被后续操作取代、不属于当前调用者或不存在 | 先 `+features` 看当前状态，已开启就不用再开；仍需开启就不带 `--idempotent-key` 重新执行（CLI 生成新 key）；不要用同一个 key 重试 |
 | exit 1，`subtype=conflict` | 能力被并发修改、key 属于其他请求，或另一次开启仍在进行 | 转述 `error.message` / `hint`；重新 `+features` 看当前状态再决定，CLI 不会自动覆盖 |
-| exit 1，`subtype=rate_limit` | 被限流，本次请求未执行 | 稍等约一分钟，按 `hint` 用同一个 `--idempotent-key` 重发 |
+| exit 1，`subtype=rate_limit` | 被限流，本次请求未执行，服务端也没有为这个 key 留下操作 | 稍等约一分钟，按 `hint` 不带 `--idempotent-key` 重新执行 `+feature-enable`；不要用原 key 续跑 |
 | exit 1，`subtype=feature_not_available`，提示服务端没有运行应用能力接口 | 当前服务端还不支持应用能力：网关内部错误 2200，或网关还没有这条路由、直接回 HTTP 404（`404 page not found`），只读复查结果相同；只有开通请求被回 404 时也按这一行处理 | 不要重试；需要数据库时按 [`lark-apps-cloud-dev.md`](lark-apps-cloud-dev.md) 经妙搭云端会话添加，或等服务端升级 |
 | exit 3，身份或授权失效（如 `token_expired`；妙搭沙箱里用户凭证过期返回 221801，凭证无效时代理直接回 HTTP 401） | 当前用户凭证不可用，任何 key 都不会成功 | 按 `hint` 让用户重新授权或登录后再执行；不要用同一个 `--idempotent-key` 反复重试 |
 | exit 1 / 4 / 5，结果失败、未知或无法核实 | 请求可能已执行，也可能没有 | 按 `hint` 先用 `--operation-ref <idempotent_key>` 查询；要续同一次请求用原 `--idempotent-key`；结果未知时不要换新 key 重新申请 |

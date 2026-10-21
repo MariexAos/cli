@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -452,9 +453,10 @@ func TestAppsFeatureEnable_ServerRejectionsAreExplainedWithoutTheOperationQuery(
 		wantSub     errs.Subtype
 		wantMessage []string
 		wantHint    []string
-		// wantSameKey: the request was not acted on, so re-sending it under
-		// the same key is the recovery.
-		wantSameKey bool
+		// wantRetryable: the request was not acted on, so trying again later
+		// can succeed. None of these answers leaves the key anything to
+		// resume, so no hint names a same-key resend.
+		wantRetryable bool
 	}{
 		{
 			name: "not a new-contract app behind the gateway label", code: 3340914, msg: "feature enable unsupported for this app",
@@ -513,9 +515,9 @@ func TestAppsFeatureEnable_ServerRejectionsAreExplainedWithoutTheOperationQuery(
 		},
 		{
 			name: "rate limited", code: 3342900, msg: "rate limit exceeded",
-			wantSub:     errs.SubtypeRateLimit,
-			wantHint:    []string{"rate limited", "did not act on this request"},
-			wantSameKey: true,
+			wantSub:       errs.SubtypeRateLimit,
+			wantHint:      []string{"rate limited", "did not act on this request", "nothing to resume", "without --idempotent-key"},
+			wantRetryable: true,
 		},
 	}
 	for _, tc := range cases {
@@ -539,8 +541,8 @@ func TestAppsFeatureEnable_ServerRejectionsAreExplainedWithoutTheOperationQuery(
 			if p.Code != tc.code {
 				t.Fatalf("code = %d, want the wire code %d", p.Code, tc.code)
 			}
-			if p.Retryable != tc.wantSameKey {
-				t.Fatalf("retryable = %t, want %t", p.Retryable, tc.wantSameKey)
+			if p.Retryable != tc.wantRetryable {
+				t.Fatalf("retryable = %t, want %t", p.Retryable, tc.wantRetryable)
 			}
 			for _, want := range tc.wantMessage {
 				if !strings.Contains(p.Message, want) {
@@ -555,9 +557,8 @@ func TestAppsFeatureEnable_ServerRejectionsAreExplainedWithoutTheOperationQuery(
 			if strings.Contains(p.Hint, "--operation-ref") {
 				t.Fatalf("a final answer must not point at the operation query: %q", p.Hint)
 			}
-			resend := "--idempotent-key " + sentKey(t, post.CapturedBody)
-			if got := strings.Contains(p.Hint, resend); got != tc.wantSameKey {
-				t.Fatalf("hint names the same-key resend = %t, want %t: %q", got, tc.wantSameKey, p.Hint)
+			if resend := "--idempotent-key " + sentKey(t, post.CapturedBody); strings.Contains(p.Hint, resend) {
+				t.Fatalf("a final answer must not send the caller round the same key: %q", p.Hint)
 			}
 			if stdout.Len() != 0 {
 				t.Fatalf("no success output expected: %s", stdout.String())
@@ -1481,4 +1482,151 @@ func TestAppsFeatureEnable_ResumeReadFailureKeepsTheCauseAndTheKey(t *testing.T)
 			}
 		})
 	}
+}
+
+// A 200 whose body is no API envelope leaves open whether the enable was
+// applied; it is not a missing route. The command reads the operation the
+// server keeps for its key and reports that.
+func TestAppsFeatureEnable_UnverifiableEnableAnswerFollowsTheKeptOperation(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", RawBody: []byte("null")}
+	reg.Register(post)
+	get := &httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features"}
+	get.OnMatch = func(req *http.Request) {
+		get.Body = featuresResponse(featureStatusWire(true), map[string]any{"ref": req.URL.Query().Get("operation_ref"), "state": "succeeded"})
+	}
+	reg.Register(get)
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	if err != nil {
+		t.Fatalf("an enable kept by the server must be reported from its operation: %v", err)
+	}
+	key := sentKey(t, post.CapturedBody)
+	if data := decodeSuccessData(t, stdout); data["idempotent_key"] != key {
+		t.Fatalf("idempotent_key = %v, want the key the POST carried %q", data["idempotent_key"], key)
+	}
+	if len(post.CapturedBodies) != 1 {
+		t.Fatalf("POST = %d, want a single enable", len(post.CapturedBodies))
+	}
+	reg.Verify(t)
+}
+
+// When the server keeps no operation for the key either, the outcome stays
+// unknown: the error keeps the key, the read-only query and the same-key
+// resume instead of calling the API missing.
+func TestAppsFeatureEnable_UnverifiableEnableAnswerKeepsTheKey(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	post := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", RawBody: []byte("null")}
+	reg.Register(post)
+	get := &httpmock.Stub{Method: "GET", URL: "/open-apis/spark/v1/apps/app_x/features", Body: featuresResponse(featureStatusWire(true), nil)}
+	reg.Register(get)
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	p, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("expected a typed error, got %T %v", err, err)
+	}
+	if p.Subtype == errs.SubtypeFeatureNotAvailable {
+		t.Fatalf("an unverifiable answer is not a missing API: %+v", p)
+	}
+	key := sentKey(t, post.CapturedBody)
+	for _, want := range []string{"idempotent_key=" + key, "--operation-ref " + key, "--idempotent-key " + key} {
+		if !strings.Contains(p.Hint, want) {
+			t.Fatalf("hint missing %q: %q", want, p.Hint)
+		}
+	}
+	if len(post.CapturedBodies) != 1 || len(get.CapturedBodies) != 1 {
+		t.Fatalf("POST/GET = %d/%d, want one enable and one read of its operation", len(post.CapturedBodies), len(get.CapturedBodies))
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("no success output expected: %s", stdout.String())
+	}
+	reg.Verify(t)
+}
+
+// The wait limit covers the polls themselves: a read that outlives it carries
+// the wait deadline, is cut off by it, and its late answer is not used.
+func TestAppsFeatureEnable_WaitLimitCoversThePollReads(t *testing.T) {
+	fastFeatureTiming(t)
+	featureEnableMaxWait = 20 * time.Millisecond
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	reg.Register(&httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Body: featuresResponse(featureStatusWire(false), nil)})
+	reg.Register(&httpmock.Stub{Method: "POST", URL: "/features/database/enable",
+		Body: enableResponse(featureStatusWire(false), map[string]any{"ref": testKey, "state": "running"})})
+	var carriedDeadline, cutOff atomic.Bool
+	slow := &httpmock.Stub{Method: "GET", URL: "operation_ref=" + testKey, Reusable: true,
+		Body: featuresResponse(featureStatusWire(true), map[string]any{"ref": testKey, "state": "succeeded"})}
+	slow.OnMatch = func(req *http.Request) {
+		if deadline, ok := req.Context().Deadline(); ok && time.Until(deadline) <= featureEnableMaxWait {
+			carriedDeadline.Store(true)
+		}
+		select {
+		case <-req.Context().Done():
+			cutOff.Store(true)
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	reg.Register(slow)
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--idempotent-key", testKey, "--as", "user"}, factory, stdout)
+	p := requireExit(t, err, output.ExitNetwork)
+	if p.Subtype != errs.SubtypeNetworkTimeout {
+		t.Fatalf("subtype = %q, want timeout", p.Subtype)
+	}
+	if !strings.Contains(p.Message, testKey) || !strings.Contains(p.Hint, "--operation-ref "+testKey) {
+		t.Fatalf("timeout must keep the key and the query: %q / %q", p.Message, p.Hint)
+	}
+	if !carriedDeadline.Load() {
+		t.Fatalf("the poll read must carry the wait deadline")
+	}
+	if !cutOff.Load() {
+		t.Fatalf("the slow poll read must be cut off by the wait deadline")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("an answer that arrives after the limit must not be reported as success: %s", stdout.String())
+	}
+}
+
+// A rate-limited enable leaves no operation on the server. Following its hint
+// — a new attempt without --idempotent-key — completes the enable.
+func TestAppsFeatureEnable_RateLimitHintLeadsToACompletedEnable(t *testing.T) {
+	fastFeatureTiming(t)
+	factory, stdout, reg := newAppsExecuteFactory(t)
+	limited := &httpmock.Stub{Method: "POST", URL: "/features/database/enable", Status: 400,
+		Body: map[string]any{"code": featureGatewayCodeBase + featureCodeRateLimited, "msg": "rate limit exceeded"}}
+	reg.Register(limited)
+	forbidFeaturesGET(t, reg, "a rate-limited request leaves no operation to read")
+
+	err := runAppsShortcut(t, AppsFeatureEnable, []string{"+feature-enable", "--feature", "database", "--app-id", "app_x", "--as", "user"}, factory, stdout)
+	p := requireExit(t, err, output.ExitAPI)
+	if p.Subtype != errs.SubtypeRateLimit {
+		t.Fatalf("subtype = %q, want %q", p.Subtype, errs.SubtypeRateLimit)
+	}
+	firstKey := sentKey(t, limited.CapturedBody)
+	next := "lark-cli apps +feature-enable --feature database --app-id app_x"
+	if !strings.Contains(p.Hint, "`"+next+"` again without --idempotent-key") {
+		t.Fatalf("hint must give the new attempt %q: %q", next, p.Hint)
+	}
+	if strings.Contains(p.Hint, "--idempotent-key "+firstKey) {
+		t.Fatalf("hint must not resume a key the server does not keep: %q", p.Hint)
+	}
+
+	retry := echoKeyStub(t, "POST", "/features/database/enable", func(key string) map[string]any {
+		return enableResponse(featureStatusWire(true), map[string]any{"ref": key, "state": "succeeded"})
+	})
+	reg.Register(retry)
+	args := append(strings.Fields(strings.TrimPrefix(next, "lark-cli apps ")), "--as", "user")
+	if err := runAppsShortcut(t, AppsFeatureEnable, args, factory, stdout); err != nil {
+		t.Fatalf("following the rate-limit hint must complete the enable: %v", err)
+	}
+	secondKey := sentKey(t, retry.CapturedBody)
+	if secondKey == firstKey {
+		t.Fatalf("the new attempt must use a new key, got the rate-limited %q again", firstKey)
+	}
+	if data := decodeSuccessData(t, stdout); data["idempotent_key"] != secondKey {
+		t.Fatalf("idempotent_key = %v, want %q", data["idempotent_key"], secondKey)
+	}
+	reg.Verify(t)
 }

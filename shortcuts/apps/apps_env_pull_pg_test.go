@@ -94,8 +94,8 @@ func requireEnvLines(t *testing.T, got string, want ...string) {
 }
 
 // requireNoEnvPullFeatureState fails when env-pull output claims the app's
-// database feature state: the env response cannot prove it, because legacy
-// USER/TCC variables can carry the same keys.
+// database feature state: the env response cannot prove it, because an older
+// app's custom variables can carry the same keys.
 func requireNoEnvPullFeatureState(t *testing.T, data map[string]any) {
 	t.Helper()
 	for _, key := range []string{"pg_enabled", "config_revision", "feature_protocol"} {
@@ -174,7 +174,7 @@ func TestAppsEnvPullDB_ExplicitDisablePrettyDescribesTheEnvironmentOnly(t *testi
 
 // A "true" flag without both connection keys present is not an explicit clear:
 // a missing key must not delete the local value, so these responses keep the
-// legacy merge (old-contract apps can carry the flag through USER/TCC vars).
+// legacy merge (old-contract apps can carry the flag in their custom variables).
 func TestAppsEnvPullDB_DisableWithAMissingConnectionKeyKeepsLocalValues(t *testing.T) {
 	cases := map[string]struct {
 		resp map[string]any
@@ -277,7 +277,7 @@ func TestAppsEnvPullDB_ExportedConnectionJSONReportsRestartWithoutFeatureState(t
 }
 
 // Responses that are neither explicit answer — every old-contract server, and
-// old-contract apps whose TCC/USER variables carry the disable flag — keep the
+// old-contract apps whose custom variables carry the disable flag — keep the
 // established behavior: the file is merged, the branch is pinned to dev,
 // nothing is cleared, and no database fields are added.
 func TestAppsEnvPullDB_OtherShapesKeepLegacyBehavior(t *testing.T) {

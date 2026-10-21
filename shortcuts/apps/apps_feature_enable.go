@@ -98,7 +98,7 @@ type featureEnableOutput struct {
 // instead of being re-sent.
 func runFeatureEnable(rctx *common.RuntimeContext, appID, feature, key string, resume bool) error {
 	if resume {
-		kept, err := readKeptFeatureOperation(rctx, appID, feature, key)
+		kept, err := readKeptFeatureOperation(rctx.Ctx(), rctx, appID, feature, key)
 		if err != nil {
 			if confirmFeatureAPIMissing(rctx, appID, err) {
 				return explainFeatureAPIMissing(err, appID)
@@ -113,18 +113,25 @@ func runFeatureEnable(rctx *common.RuntimeContext, appID, feature, key string, r
 	}
 
 	body := map[string]any{"idempotent_key": key}
-	data, err := callWithIdempotentReplay(rctx, "POST", appFeatureEnablePath(appID, feature), nil, body)
+	data, err := callWithIdempotentReplay(rctx.Ctx(), rctx, "POST", appFeatureEnablePath(appID, feature), nil, body)
 	if err != nil {
 		if confirmFeatureAPIMissing(rctx, appID, err) {
 			return explainFeatureAPIMissing(err, appID)
 		}
 		// The server answers 40913 while any enable holds the app, including
-		// this key's own earlier attempt that a network replay raced. If the
+		// this key's own earlier attempt that a network replay raced; and an
+		// answer that is no API envelope (such as a 200 with a null body)
+		// leaves open whether the request was applied. Either way, if the
 		// server keeps an operation for this key, that operation is the answer.
-		if featureStudioCode(problemCode(err)) == featureCodeKeyConflict {
-			if kept, readErr := readKeptFeatureOperation(rctx, appID, feature, key); readErr == nil && kept != nil {
+		conflict := featureStudioCode(problemCode(err)) == featureCodeKeyConflict
+		unverified := isInvalidFeatureResponse(err)
+		if conflict || unverified {
+			if kept, readErr := readKeptFeatureOperation(rctx.Ctx(), rctx, appID, feature, key); readErr == nil && kept != nil {
 				return followKeptFeatureOperation(rctx, kept, appID, feature, key)
 			}
+		}
+		if unverified {
+			return withUnverifiedAnswerHint(err, appID, key)
 		}
 		return setFeatureRecoveryHint(err, appID, key)
 	}
@@ -168,8 +175,8 @@ func problemCode(err error) int {
 // readKeptFeatureOperation reads the operation the server keeps for key. It
 // returns nil when the server reports no operation, so the caller re-sends the
 // same request under the same key.
-func readKeptFeatureOperation(rctx *common.RuntimeContext, appID, feature, key string) (*appFeatureEnableResult, error) {
-	data, err := callWithIdempotentReplay(rctx, "GET", appFeaturesPath(appID), map[string]any{"operation_ref": key}, nil)
+func readKeptFeatureOperation(ctx context.Context, rctx *common.RuntimeContext, appID, feature, key string) (*appFeatureEnableResult, error) {
+	data, err := callWithIdempotentReplay(ctx, rctx, "GET", appFeaturesPath(appID), map[string]any{"operation_ref": key}, nil)
 	if err != nil {
 		return nil, setKeptOperationReadHint(err, appID, key)
 	}
@@ -245,17 +252,21 @@ func checkEnableResultIdentity(gotApp, gotFeature string, op *appFeatureOperatio
 }
 
 // withUnverifiedAnswerHint keeps an invalid-response classification but tells
-// the caller the request itself may have been applied.
+// the caller the request itself may have been applied, so the key stays the
+// way to find out and to resume.
 func withUnverifiedAnswerHint(err error, appID, key string) error {
 	if p, ok := errs.ProblemOf(err); ok {
-		p.Hint = fmt.Sprintf("the enable request was sent but its answer could not be verified (idempotent_key=%s); check the state with `%s` before any new attempt", key, featureQueryCommand(appID, key))
+		p.Hint = fmt.Sprintf("the enable request was sent but its answer could not be verified (idempotent_key=%s); check the state with `%s`; to resume the same request run `%s`; do not start a new request with another key until the state is known", key, featureQueryCommand(appID, key), featureEnableRetryCommand(appID, key))
 	}
 	return err
 }
 
 // waitFeatureOperation polls the read-only features endpoint while the server
 // reports the operation as running. It never re-sends the write; stopping
-// early leaves the server-side operation untouched.
+// early leaves the server-side operation untouched. The wait limit covers the
+// polls themselves: every read and its network replays run under the wait
+// deadline, and an answer that arrives after it is not used, so a slow read
+// cannot stretch the wait past the limit.
 func waitFeatureOperation(rctx *common.RuntimeContext, appID, feature, key string) (*appFeatureEnableResult, error) {
 	waitCtx, cancel := context.WithTimeout(rctx.Ctx(), featureEnableMaxWait)
 	defer cancel()
@@ -267,7 +278,10 @@ func waitFeatureOperation(rctx *common.RuntimeContext, appID, feature, key strin
 			return nil, featureWaitStoppedError(waitCtx.Err(), appID, feature, key)
 		case <-time.After(featureEnablePollInterval):
 		}
-		data, err := callWithIdempotentReplay(rctx, "GET", appFeaturesPath(appID), params, nil)
+		data, err := callWithIdempotentReplay(waitCtx, rctx, "GET", appFeaturesPath(appID), params, nil)
+		if waitCtx.Err() != nil {
+			return nil, featureWaitStoppedError(waitCtx.Err(), appID, feature, key)
+		}
 		if err != nil {
 			// The operation is already running on the server, so a failed
 			// read leaves its outcome unknown rather than rejecting a request.

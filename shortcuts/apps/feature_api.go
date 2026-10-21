@@ -4,6 +4,7 @@
 package apps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 
 	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/recovery"
@@ -310,19 +312,68 @@ func validateIdempotentKeyFlag(rctx *common.RuntimeContext) error {
 
 // callWithIdempotentReplay issues one logical request and replays the identical
 // body after a network failure. Only network failures are replayed; a server
-// answer (including a conflict) is returned as is.
-func callWithIdempotentReplay(rctx *common.RuntimeContext, method, url string, params map[string]any, body any) (map[string]any, error) {
+// answer (including a conflict) is returned as is. ctx bounds every attempt and
+// every backoff, so a caller's deadline also covers slow requests and replays.
+func callWithIdempotentReplay(ctx context.Context, rctx *common.RuntimeContext, method, url string, params map[string]any, body any) (map[string]any, error) {
 	for attempt := 0; ; attempt++ {
-		data, err := rctx.CallAPITyped(method, url, params, body)
-		if err == nil || !errs.IsNetwork(err) || attempt >= len(featureRetryBackoff) || rctx.Ctx().Err() != nil {
+		data, err := callFeatureAPI(ctx, rctx, method, url, params, body)
+		if err == nil || !errs.IsNetwork(err) || attempt >= len(featureRetryBackoff) || ctx.Err() != nil {
 			return data, err
 		}
 		select {
-		case <-rctx.Ctx().Done():
+		case <-ctx.Done():
 			return data, err
 		case <-time.After(featureRetryBackoff[attempt]):
 		}
 	}
+}
+
+// callFeatureAPI sends one request to an app features endpoint under ctx and
+// classifies the answer the way CallAPITyped does, with one addition: a 404
+// whose body is no API answer is reported as the HTTP 404 it was. The shared
+// classifier reports any non-object JSON body as an invalid response without
+// its status, and a gateway's plain-text "404 page not found" decodes as the
+// JSON number 404, so without the status a missing route and a 200 answer
+// with a null body would look the same.
+func callFeatureAPI(ctx context.Context, rctx *common.RuntimeContext, method, url string, params map[string]any, body any) (map[string]any, error) {
+	req := &larkcore.ApiReq{HttpMethod: method, ApiPath: url, QueryParams: larkcore.QueryParams{}}
+	for k, v := range params {
+		req.QueryParams.Set(k, fmt.Sprint(v))
+	}
+	if body != nil {
+		req.Body = body
+	}
+	resp, err := rctx.DoAPIWithContext(ctx, req)
+	if err != nil {
+		if _, ok := errs.ProblemOf(err); ok {
+			return nil, err
+		}
+		return nil, errs.WrapInternal(err)
+	}
+	data, err := rctx.ClassifyAPIResponse(resp)
+	if err != nil && resp.StatusCode == http.StatusNotFound && isInvalidFeatureResponse(err) {
+		return nil, featureHTTP404Error(resp, err)
+	}
+	return data, err
+}
+
+// isInvalidFeatureResponse reports a body that is no API envelope, such as a
+// JSON null or a bare number.
+func isInvalidFeatureResponse(err error) bool {
+	p, ok := errs.ProblemOf(err)
+	return ok && p.Category == errs.CategoryInternal && p.Subtype == errs.SubtypeInvalidResponse
+}
+
+// featureHTTP404Error reports a 404 without an API answer the way the shared
+// classifier reports one whose body does not decode at all.
+func featureHTTP404Error(resp *larkcore.ApiResp, cause error) error {
+	e := errs.NewAPIError(errs.SubtypeNotFound, "HTTP %d: %s", resp.StatusCode, common.TruncateStr(strings.TrimSpace(string(resp.RawBody)), 500)).
+		WithCode(resp.StatusCode).
+		WithCause(cause)
+	if p, ok := errs.ProblemOf(cause); ok && p.LogID != "" {
+		e = e.WithLogID(p.LogID)
+	}
+	return e
 }
 
 func appFeaturesPath(appID string) string {
@@ -431,9 +482,13 @@ func explainFeatureRejection(p *errs.Problem, appID, key string) bool {
 			p.Hint = featureConflictHint(appID, key)
 		}
 	case featureCodeRateLimited:
+		// The limit is checked before anything else, so the server keeps no
+		// operation for this request and the key has nothing to resume: a
+		// resume would read the key, find no operation and stop. A new attempt
+		// is the recovery, as for any key the server does not keep.
 		p.Subtype = errs.SubtypeRateLimit
 		p.Retryable = true
-		p.Hint = fmt.Sprintf("the enable API is rate limited and did not act on this request; wait about a minute, then send the same request again with `%s`", featureEnableRetryCommand(appID, key))
+		p.Hint = fmt.Sprintf("the enable API is rate limited and did not act on this request, so idempotent_key=%s has nothing to resume; wait about a minute, then run `lark-cli apps +feature-enable --feature %s --app-id %s` again without --idempotent-key", key, featurePG, appID)
 	default:
 		p.Hint = "the server rejected the enable request; the message says why, so fix that before trying again"
 	}
@@ -516,15 +571,14 @@ func asFeatureServerAnswer(err error) (*errs.Problem, error) {
 	return &apiErr.Problem, apiErr
 }
 
-// isFeatureNonAPIAnswer reports a response that did not come from the API.
+// isFeatureNonAPIAnswer reports an HTTP 404 that did not come from the API.
 // Spark answers its own failures, a missing app included, inside a JSON
-// envelope. A gateway without the route answers HTTP 404 with the plain text
-// "404 page not found", whose leading 404 decodes as a JSON number, so the
-// classifier reports a non-object JSON response; a 404 body that does not
-// decode at all is classified by its status as not_found.
+// envelope; a gateway without the route answers a bare 404 (callFeatureAPI
+// keeps that status even when the body happens to decode as a JSON number).
+// Any other body that is no API answer, such as a 200 with a null body, is not
+// evidence of a missing route: the request may have been applied.
 func isFeatureNonAPIAnswer(p *errs.Problem) bool {
-	return (p.Category == errs.CategoryAPI && p.Subtype == errs.SubtypeNotFound && p.Code == http.StatusNotFound) ||
-		(p.Category == errs.CategoryInternal && p.Subtype == errs.SubtypeInvalidResponse)
+	return p.Category == errs.CategoryAPI && p.Subtype == errs.SubtypeNotFound && p.Code == http.StatusNotFound
 }
 
 // confirmFeatureAPIMissing re-checks an answer isFeatureAPIAbsentAnswer
@@ -535,7 +589,7 @@ func confirmFeatureAPIMissing(rctx *common.RuntimeContext, appID string, err err
 	if !isFeatureAPIAbsentAnswer(err) {
 		return false
 	}
-	_, probeErr := rctx.CallAPITyped("GET", appFeaturesPath(appID), nil, nil)
+	_, probeErr := callFeatureAPI(rctx.Ctx(), rctx, "GET", appFeaturesPath(appID), nil, nil)
 	return isFeatureAPIAbsentAnswer(probeErr)
 }
 
@@ -548,7 +602,7 @@ func explainFeatureAPIMissing(err error, appID string) error {
 	}
 	answer := "failed with the gateway's internal error (2200)"
 	if p.Code != featureCodeGatewayInternal {
-		answer = "got a response that is no API answer, such as the gateway's plain-text 404 for a route it does not have,"
+		answer = "got an HTTP 404 that is no API answer, as a gateway without the route answers,"
 	}
 	p.Subtype = errs.SubtypeFeatureNotAvailable
 	p.Retryable = false
