@@ -1,6 +1,6 @@
 # lark-apps 本地开发
 
-适用：用户要把妙搭应用（full_stack、frontend 或 html）源码拉到本地，用本地 code agent/IDE 开发、再发布。其中调试数据库仅 full_stack 适用（frontend / html 无数据库）。
+适用：用户要把妙搭应用（full_stack、frontend 或 html）源码拉到本地，用本地 code agent/IDE 开发、再发布。调试数据库只适用于 `+get` 返回 `full_stack`、且 `+features` 里 `database` 为 `enabled=true` 的应用；frontend / html 应用没有数据库。
 
 ## 新建 vs 已有应用
 
@@ -42,7 +42,12 @@ lark-cli apps +release-create --as user --app-id app_xxx --branch sprint/default
 
 ### frontend
 
-纯前端应用（vite-react，无数据库）。流程与 full_stack 基本一致——`+init` 装依赖、`npm run dev`、commit/push/release——差别是无 `+db-*` 调库步骤。后续需要数据库/后端能力时不在本地升级，按 SKILL.md「类型升级」引导到云端会话。
+`--app-type frontend` 表示用户没提数据库需求，建出来是哪种工程由服务端决定：以 `+create` 之后 `+get` 返回的 `app_type` 为准，`+init` 也按它拉工程。
+
+- 返回 `frontend`：纯前端应用（vite-react，无数据库）。流程与 full_stack 基本一致——`+init` 装依赖、`npm run dev`、commit/push/release——差别是无 `+db-*` 调库步骤。后续需要数据库/后端能力时不在本地升级，按 SKILL.md「后续加数据库 / 类型升级」引导到云端会话。
+- 返回 `full_stack`：按上面 full_stack 的流程开发，数据库默认未开启。需要数据库时按 [`lark-apps-features.md`](lark-apps-features.md) 用 `+features` / `+feature-enable --feature database` 开启，不用去云端会话。
+
+下面示例是返回 `frontend` 的情况：
 
 ```bash
 # 新建 frontend 应用
